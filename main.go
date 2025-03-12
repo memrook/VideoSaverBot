@@ -53,7 +53,7 @@ func main() {
 			msg := tgbotapi.NewMessage(message.Chat.ID,
 				"Привет! Я бот для скачивания видео из Instagram и Twitter (X). "+
 					"Просто отправь мне ссылку на пост, и я сохраню для тебя видео. "+
-					"Теперь с улучшенной технологией извлечения видео!")
+					"Теперь с улучшенной технологией извлечения видео и повышенной стабильностью!")
 			bot.Send(msg)
 			continue
 		}
@@ -61,7 +61,7 @@ func main() {
 		// Обработка ссылок
 		if instagramRegex.MatchString(message.Text) {
 			// Отправка сообщения о получении ссылки
-			msg := tgbotapi.NewMessage(message.Chat.ID, "Обрабатываю Instagram ссылку через улучшенный метод...")
+			msg := tgbotapi.NewMessage(message.Chat.ID, "Обрабатываю Instagram ссылку через улучшенный и стабильный метод...")
 			bot.Send(msg)
 
 			// Скачивание видео
@@ -77,7 +77,7 @@ func main() {
 
 		} else if twitterRegex.MatchString(message.Text) {
 			// Отправка сообщения о получении ссылки
-			msg := tgbotapi.NewMessage(message.Chat.ID, "Обрабатываю Twitter/X ссылку...")
+			msg := tgbotapi.NewMessage(message.Chat.ID, "Обрабатываю Twitter/X ссылку через быстрый и надежный VX Twitter...")
 			bot.Send(msg)
 
 			// Скачивание видео

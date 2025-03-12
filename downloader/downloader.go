@@ -99,7 +99,8 @@ func DownloadInstagramVideo(url string) (string, error) {
 	if videoURL == "" {
 		doc.Find("a[href]").Each(func(i int, s *goquery.Selection) {
 			href, exists := s.Attr("href")
-			if exists && strings.Contains(href, ".mp4") && videoURL == "" {
+			if exists && strings.Contains(href, ".mp4") && videoURL == "" ||
+				exists && strings.Contains(href, "/videos/") && videoURL == "" {
 				// Если ссылка относительная, добавляем домен
 				if !strings.HasPrefix(href, "http") {
 					href = "https://ddinstagram.com" + href
@@ -137,6 +138,62 @@ func DownloadInstagramVideo(url string) (string, error) {
 					}
 				})
 			}
+		}
+	}
+
+	// Если до сих пор URL не найден, пробуем третий сервис - igram.io
+	if videoURL == "" {
+		igramUrl := strings.Replace(url, "instagram.com", "igram.io/instagram-downloader", 1)
+
+		req, err := http.NewRequest("GET", igramUrl, nil)
+		if err != nil {
+			return "", fmt.Errorf("ошибка при создании запроса к igram.io: %v", err)
+		}
+
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("ошибка при запросе к igram.io: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode == http.StatusOK {
+			doc, err := goquery.NewDocumentFromReader(resp.Body)
+			if err == nil {
+				// Ищем прямые ссылки на видео
+				doc.Find("a.download-button").Each(func(i int, s *goquery.Selection) {
+					href, exists := s.Attr("href")
+					if exists && strings.Contains(href, ".mp4") && videoURL == "" {
+						videoURL = href
+					}
+				})
+
+				// Если не нашли прямую ссылку, ищем через кнопки
+				if videoURL == "" {
+					doc.Find("button.downloadBtn").Each(func(i int, s *goquery.Selection) {
+						dataURL, exists := s.Attr("data-url")
+						if exists && strings.Contains(dataURL, ".mp4") && videoURL == "" {
+							videoURL = dataURL
+						}
+					})
+				}
+			}
+		}
+	}
+
+	// Дополнительная проверка для относительных URL
+	if videoURL != "" && strings.HasPrefix(videoURL, "/") {
+		// Определяем базовый домен на основе последнего использованного сервиса
+		if strings.Contains(videoURL, "ddinstagram") {
+			videoURL = "https://ddinstagram.com" + videoURL
+		} else if strings.Contains(videoURL, "instafinsta") {
+			videoURL = "https://instafinsta.com" + videoURL
+		} else if strings.Contains(videoURL, "igram") {
+			videoURL = "https://igram.io" + videoURL
+		} else {
+			// Если не удается определить домен, используем ddinstagram по умолчанию
+			videoURL = "https://ddinstagram.com" + videoURL
 		}
 	}
 
@@ -289,6 +346,11 @@ func downloadMedia(url, outputPath string) (string, error) {
 	// Удаляем лишние кавычки и экранированные символы в URL
 	url = strings.Trim(url, "\"'")
 	url = strings.ReplaceAll(url, "\\", "")
+
+	// Проверяем и исправляем относительные URL
+	if strings.HasPrefix(url, "/") {
+		url = "https://ddinstagram.com" + url
+	}
 
 	// Проверяем, что URL начинается с http или https
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
