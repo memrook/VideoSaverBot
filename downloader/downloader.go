@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -290,55 +289,6 @@ func DownloadTwitterVideo(url string) (string, error) {
 
 	// Скачивание видео
 	return downloadMedia(videoURL, outputPath)
-}
-
-// extractJSONBlocks извлекает блоки JSON из HTML строки
-func extractJSONBlocks(htmlContent string) []string {
-	var jsonBlocks []string
-
-	// Регулярное выражение для поиска JSON блоков
-	re := regexp.MustCompile(`\{(?:[^{}]|(?:\{(?:[^{}]|(?:\{[^{}]*\}))*\}))*\}`)
-	matches := re.FindAllString(htmlContent, -1)
-
-	for _, match := range matches {
-		// Проверяем, что это похоже на валидный JSON
-		if strings.Contains(match, "\"") {
-			jsonBlocks = append(jsonBlocks, match)
-		}
-	}
-
-	return jsonBlocks
-}
-
-// findVideoURLInJSON рекурсивно ищет URL видео в JSON объекте
-func findVideoURLInJSON(data interface{}) string {
-	switch v := data.(type) {
-	case map[string]interface{}:
-		// Проверяем известные ключи, где может быть URL видео
-		for key, value := range v {
-			if key == "video_url" || key == "playbackUrl" || key == "url" {
-				if url, ok := value.(string); ok {
-					if strings.Contains(url, "video.twimg.com") || strings.Contains(url, ".mp4") {
-						return url
-					}
-				}
-			}
-
-			// Рекурсивный поиск в дочерних объектах
-			if url := findVideoURLInJSON(value); url != "" {
-				return url
-			}
-		}
-	case []interface{}:
-		// Ищем в каждом элементе массива
-		for _, item := range v {
-			if url := findVideoURLInJSON(item); url != "" {
-				return url
-			}
-		}
-	}
-
-	return ""
 }
 
 // downloadMedia скачивает медиа по URL и сохраняет его в outputPath

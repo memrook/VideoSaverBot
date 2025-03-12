@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -61,35 +62,39 @@ func main() {
 		// Обработка ссылок
 		if instagramRegex.MatchString(message.Text) {
 			// Отправка сообщения о получении ссылки
-			msg := tgbotapi.NewMessage(message.Chat.ID, "Обрабатываю Instagram ссылку через улучшенный и стабильный метод...")
-			bot.Send(msg)
+			processingMsg, _ := bot.Send(
+				tgbotapi.NewMessage(message.Chat.ID, "Обрабатываю Instagram ссылку..."))
 
 			// Скачивание видео
 			videoPath, err := downloader.DownloadInstagramVideo(message.Text)
 			if err != nil {
 				errorMsg := tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("Ошибка при скачивании видео: %v", err))
 				bot.Send(errorMsg)
+				// Удаляем сообщение об ошибке через 10 секунд
+				go deleteMessageAfterDelay(bot, message.Chat.ID, processingMsg.MessageID, 10)
 				continue
 			}
 
-			// Отправка видео
-			sendVideo(bot, message.Chat.ID, videoPath, userID)
+			// Отправка видео и удаление сообщения о загрузке
+			sendVideo(bot, message.Chat.ID, videoPath, userID, processingMsg.MessageID)
 
 		} else if twitterRegex.MatchString(message.Text) {
 			// Отправка сообщения о получении ссылки
-			msg := tgbotapi.NewMessage(message.Chat.ID, "Обрабатываю Twitter/X ссылку через быстрый и надежный VX Twitter...")
-			bot.Send(msg)
+			processingMsg, _ := bot.Send(
+				tgbotapi.NewMessage(message.Chat.ID, "Обрабатываю Twitter/X ссылку..."))
 
 			// Скачивание видео
 			videoPath, err := downloader.DownloadTwitterVideo(message.Text)
 			if err != nil {
 				errorMsg := tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("Ошибка при скачивании видео: %v", err))
 				bot.Send(errorMsg)
+				// Удаляем сообщение об ошибке через 10 секунд
+				go deleteMessageAfterDelay(bot, message.Chat.ID, processingMsg.MessageID, 10)
 				continue
 			}
 
-			// Отправка видео
-			sendVideo(bot, message.Chat.ID, videoPath, userID)
+			// Отправка видео и удаление сообщения о загрузке
+			sendVideo(bot, message.Chat.ID, videoPath, userID, processingMsg.MessageID)
 
 		} else {
 			// Если сообщение не содержит ссылку на Instagram или Twitter
@@ -100,14 +105,30 @@ func main() {
 	}
 }
 
+// Удаление сообщения после задержки (в секундах)
+func deleteMessageAfterDelay(bot *tgbotapi.BotAPI, chatID int64, messageID int, delaySeconds int) {
+	time.Sleep(time.Duration(delaySeconds) * time.Second)
+	deleteMsg := tgbotapi.NewDeleteMessage(chatID, messageID)
+	if _, err := bot.Send(deleteMsg); err != nil {
+		log.Printf("Не удалось удалить сообщение %d: %v", messageID, err)
+	}
+}
+
 // Отправка видео пользователю
-func sendVideo(bot *tgbotapi.BotAPI, chatID int64, videoPath string, userID int64) {
+func sendVideo(bot *tgbotapi.BotAPI, chatID int64, videoPath string, userID int64, processingMsgID int) {
 	// Подготовка файла для отправки
 	video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(videoPath))
 	//video.Caption = "Вот ваше видео!"
 
 	// Отправка видео
 	_, err := bot.Send(video)
+
+	// Удаляем сообщение "Обрабатываю..." независимо от результата
+	deleteMsg := tgbotapi.NewDeleteMessage(chatID, processingMsgID)
+	if _, delErr := bot.Send(deleteMsg); delErr != nil {
+		log.Printf("Не удалось удалить служебное сообщение %d: %v", processingMsgID, delErr)
+	}
+
 	if err != nil {
 		log.Printf("Ошибка при отправке видео пользователю %d: %v", userID, err)
 		errorMsg := tgbotapi.NewMessage(chatID, "Не удалось отправить видео. Попробуйте еще раз.")
