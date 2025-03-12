@@ -9,5 +9,5 @@ require (
 
 require (
 	github.com/andybalholm/cascadia v1.3.1 // indirect
-	golang.org/x/net v0.15.0 // indirect
+	golang.org/x/net v0.33.0 // indirect
 )

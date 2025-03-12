@@ -28,7 +28,7 @@ func main() {
 		log.Fatalf("Ошибка инициализации бота: %v", err)
 	}
 
-	bot.Debug = false // В продакшне установите false
+	bot.Debug = true // В продакшне установите false
 	log.Printf("Авторизован как %s", bot.Self.UserName)
 
 	// Настройка апдейтов
@@ -52,7 +52,8 @@ func main() {
 		if message.IsCommand() && message.Command() == "start" {
 			msg := tgbotapi.NewMessage(message.Chat.ID,
 				"Привет! Я бот для скачивания видео из Instagram и Twitter (X). "+
-					"Просто отправь мне ссылку на пост, и я сохраню для тебя видео.")
+					"Просто отправь мне ссылку на пост, и я сохраню для тебя видео. "+
+					"Теперь с улучшенной технологией извлечения видео!")
 			bot.Send(msg)
 			continue
 		}
@@ -60,7 +61,7 @@ func main() {
 		// Обработка ссылок
 		if instagramRegex.MatchString(message.Text) {
 			// Отправка сообщения о получении ссылки
-			msg := tgbotapi.NewMessage(message.Chat.ID, "Обрабатываю Instagram ссылку...")
+			msg := tgbotapi.NewMessage(message.Chat.ID, "Обрабатываю Instagram ссылку через улучшенный метод...")
 			bot.Send(msg)
 
 			// Скачивание видео
@@ -76,7 +77,7 @@ func main() {
 
 		} else if twitterRegex.MatchString(message.Text) {
 			// Отправка сообщения о получении ссылки
-			msg := tgbotapi.NewMessage(message.Chat.ID, "Обрабатываю Twitter ссылку...")
+			msg := tgbotapi.NewMessage(message.Chat.ID, "Обрабатываю Twitter/X ссылку...")
 			bot.Send(msg)
 
 			// Скачивание видео
@@ -103,7 +104,7 @@ func main() {
 func sendVideo(bot *tgbotapi.BotAPI, chatID int64, videoPath string, userID int64) {
 	// Подготовка файла для отправки
 	video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(videoPath))
-	video.Caption = "Вот ваше видео!"
+	//video.Caption = "Вот ваше видео!"
 
 	// Отправка видео
 	_, err := bot.Send(video)
