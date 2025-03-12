@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"goland/VideoSaverBot/downloader"
 	"log"
@@ -17,10 +18,18 @@ var (
 )
 
 func main() {
-	// Получение токена из переменной окружения
-	botToken := os.Getenv("TELEGRAM_BOT_TOKEN")
+	// Определение параметров командной строки
+	botTokenFlag := flag.String("token", "", "Токен Telegram бота")
+	debugModeFlag := flag.Bool("debug", false, "Режим отладки (true/false)")
+	flag.Parse()
+
+	// Получение токена из параметров или переменной окружения
+	botToken := *botTokenFlag
 	if botToken == "" {
-		log.Fatal("Токен бота не найден. Установите переменную окружения TELEGRAM_BOT_TOKEN")
+		botToken = os.Getenv("TELEGRAM_BOT_TOKEN")
+		if botToken == "" {
+			log.Fatal("Токен бота не найден. Установите переменную окружения TELEGRAM_BOT_TOKEN или используйте флаг -token")
+		}
 	}
 
 	// Инициализация бота
@@ -29,8 +38,8 @@ func main() {
 		log.Fatalf("Ошибка инициализации бота: %v", err)
 	}
 
-	bot.Debug = false // В продакшне установите false
-	log.Printf("Авторизован как %s", bot.Self.UserName)
+	bot.Debug = *debugModeFlag // Установка режима отладки из параметра
+	log.Printf("Авторизован как %s (Режим отладки: %v)", bot.Self.UserName, bot.Debug)
 
 	// Настройка апдейтов
 	updateConfig := tgbotapi.NewUpdate(0)
