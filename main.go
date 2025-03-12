@@ -29,7 +29,7 @@ func main() {
 		log.Fatalf("Ошибка инициализации бота: %v", err)
 	}
 
-	bot.Debug = true // В продакшне установите false
+	bot.Debug = false // В продакшне установите false
 	log.Printf("Авторизован как %s", bot.Self.UserName)
 
 	// Настройка апдейтов
