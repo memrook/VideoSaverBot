@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
-	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -20,8 +19,6 @@ var (
 	twitterRegex   = regexp.MustCompile(`https?://(www\.)?(twitter\.com|x\.com)/[a-zA-Z0-9_]+/status/[0-9]+`)
 	// Семафор для ограничения количества одновременных запросов на скачивание
 	downloadSemaphore chan struct{}
-	// Мьютекс для синхронизации создания директорий
-	tempDirMutex = &sync.Mutex{}
 )
 
 func main() {
@@ -102,7 +99,7 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 	if instagramRegex.MatchString(message.Text) {
 		// Отправка сообщения о получении ссылки
 		processingMsg, _ := bot.Send(
-			tgbotapi.NewMessage(message.Chat.ID, "Обрабатываю Instagram ссылку через улучшенный и стабильный метод..."))
+			tgbotapi.NewMessage(message.Chat.ID, "Обрабатываю Instagram ссылку..."))
 
 		// Получаем семафор (блокирует, если достигнут лимит одновременных скачиваний)
 		acquireSemaphore()
@@ -127,7 +124,7 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 	} else if twitterRegex.MatchString(message.Text) {
 		// Отправка сообщения о получении ссылки
 		processingMsg, _ := bot.Send(
-			tgbotapi.NewMessage(message.Chat.ID, "Обрабатываю Twitter/X ссылку через быстрый и надежный VX Twitter..."))
+			tgbotapi.NewMessage(message.Chat.ID, "Обрабатываю Twitter/X ссылку..."))
 
 		// Получаем семафор (блокирует, если достигнут лимит одновременных скачиваний)
 		acquireSemaphore()
