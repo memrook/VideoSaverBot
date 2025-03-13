@@ -1,29 +1,65 @@
 package downloader
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
 )
 
-// DownloadInstagramVideo скачивает видео из Instagram по ссылке на пост
-func DownloadInstagramVideo(url string) (string, error) {
-	// Создаем директорию для временных файлов, если она не существует
-	tempDir := "temp_videos"
-	if err := os.MkdirAll(tempDir, 0755); err != nil {
-		return "", fmt.Errorf("не удалось создать директорию для временных файлов: %v", err)
+// Мьютекс для синхронизации создания директорий
+var tempDirMutex = &sync.Mutex{}
+
+// Генерирует уникальный идентификатор файла
+func generateUniqueID() string {
+	// Генерируем 8 байт случайных данных
+	randomBytes := make([]byte, 8)
+	_, err := rand.Read(randomBytes)
+	if err != nil {
+		// Если не удалось сгенерировать случайное число, используем время + 4 доп. байта
+		return fmt.Sprintf("%d-%d", time.Now().UnixNano(), time.Now().Unix()%10000)
 	}
 
-	// Генерация уникального имени файла
+	// Возвращаем hex-представление случайных байтов
+	return hex.EncodeToString(randomBytes)
+}
+
+// DownloadInstagramVideo скачивает видео из Instagram по ссылке на пост
+func DownloadInstagramVideo(url string, userID int64) (string, error) {
+	// Создаем директорию для временных файлов, если она не существует
+	tempDirBase := "temp_videos"
+
+	// Используем мьютекс для синхронизации создания директорий
+	tempDirMutex.Lock()
+	if err := os.MkdirAll(tempDirBase, 0755); err != nil {
+		tempDirMutex.Unlock()
+		return "", fmt.Errorf("не удалось создать базовую директорию для временных файлов: %v", err)
+	}
+	tempDirMutex.Unlock()
+
+	// Создаем уникальную поддиректорию для пользователя
+	userDir := filepath.Join(tempDirBase, strconv.FormatInt(userID, 10))
+	tempDirMutex.Lock()
+	if err := os.MkdirAll(userDir, 0755); err != nil {
+		tempDirMutex.Unlock()
+		return "", fmt.Errorf("не удалось создать директорию пользователя для временных файлов: %v", err)
+	}
+	tempDirMutex.Unlock()
+
+	// Генерация гарантированно уникального имени файла с использованием userID и случайного идентификатора
+	uniqueID := generateUniqueID()
 	timestamp := time.Now().UnixNano()
-	outputPath := filepath.Join(tempDir, fmt.Sprintf("instagram_%d.mp4", timestamp))
+	outputPath := filepath.Join(userDir, fmt.Sprintf("instagram_%d_%s_%d.mp4", userID, uniqueID, timestamp))
 
 	// Заменяем instagram.com на ddinstagram.com для легкого извлечения видео
 	ddUrl := strings.Replace(url, "instagram.com", "ddinstagram.com", 1)
@@ -205,16 +241,31 @@ func DownloadInstagramVideo(url string) (string, error) {
 }
 
 // DownloadTwitterVideo скачивает видео из Twitter по ссылке на пост
-func DownloadTwitterVideo(url string) (string, error) {
+func DownloadTwitterVideo(url string, userID int64) (string, error) {
 	// Создаем директорию для временных файлов, если она не существует
-	tempDir := "temp_videos"
-	if err := os.MkdirAll(tempDir, 0755); err != nil {
-		return "", fmt.Errorf("не удалось создать директорию для временных файлов: %v", err)
-	}
+	tempDirBase := "temp_videos"
 
-	// Генерация уникального имени файла
+	// Используем мьютекс для синхронизации создания директорий
+	tempDirMutex.Lock()
+	if err := os.MkdirAll(tempDirBase, 0755); err != nil {
+		tempDirMutex.Unlock()
+		return "", fmt.Errorf("не удалось создать базовую директорию для временных файлов: %v", err)
+	}
+	tempDirMutex.Unlock()
+
+	// Создаем уникальную поддиректорию для пользователя
+	userDir := filepath.Join(tempDirBase, strconv.FormatInt(userID, 10))
+	tempDirMutex.Lock()
+	if err := os.MkdirAll(userDir, 0755); err != nil {
+		tempDirMutex.Unlock()
+		return "", fmt.Errorf("не удалось создать директорию пользователя для временных файлов: %v", err)
+	}
+	tempDirMutex.Unlock()
+
+	// Генерация гарантированно уникального имени файла с использованием userID и случайного идентификатора
+	uniqueID := generateUniqueID()
 	timestamp := time.Now().UnixNano()
-	outputPath := filepath.Join(tempDir, fmt.Sprintf("twitter_%d.mp4", timestamp))
+	outputPath := filepath.Join(userDir, fmt.Sprintf("twitter_%d_%s_%d.mp4", userID, uniqueID, timestamp))
 
 	// Заменяем x.com на twitter.com, а затем twitter.com на vxtwitter.com
 	url = strings.Replace(url, "x.com", "twitter.com", 1)
