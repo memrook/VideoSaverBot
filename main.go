@@ -41,35 +41,69 @@ func main() {
 		}
 	}
 
-	// Инициализация бота
-	bot, err := tgbotapi.NewBotAPI(botToken)
+	// Инициализация стандартного бота без кастомного HTTP клиента
+	client, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
 		log.Fatalf("Ошибка инициализации бота: %v", err)
 	}
 
-	bot.Debug = *debugModeFlag // Установка режима отладки из параметра
-	log.Printf("Авторизован как %s (Режим отладки: %v)", bot.Self.UserName, bot.Debug)
+	client.Debug = *debugModeFlag // Установка режима отладки из параметра
+	log.Printf("Авторизован как %s (Режим отладки: %v)", client.Self.UserName, client.Debug)
 
 	// Настраиваем команды бота
-	setupBotCommands(bot)
+	setupBotCommands(client)
 
 	// Запускаем фоновую задачу для периодической очистки старых файлов
 	go startPeriodicCleanup()
 
-	// Настройка апдейтов
+	// Настройка апдейтов с более коротким таймаутом
 	updateConfig := tgbotapi.NewUpdate(0)
-	updateConfig.Timeout = 60
+	updateConfig.Timeout = 30
 
-	updates := bot.GetUpdatesChan(updateConfig)
+	// Создаем канал для обновлений
+	updates := client.GetUpdatesChan(updateConfig)
 
-	// Обработка сообщений
-	for update := range updates {
-		if update.Message == nil {
-			continue
+	// Создаем канал для восстановления соединения
+	connectionErrors := make(chan error)
+	reconnect := make(chan struct{})
+
+	// Запускаем мониторинг соединения
+	go monitorConnection(client, connectionErrors, reconnect)
+
+	// Основной цикл обработки сообщений
+	for {
+		select {
+		case update := <-updates:
+			if update.Message != nil {
+				// Запускаем обработку сообщения в отдельной горутине
+				go handleMessage(client, update.Message)
+			}
+		case err := <-connectionErrors:
+			// Обрабатываем ошибку соединения
+			if !strings.Contains(err.Error(), "timeout") && !strings.Contains(err.Error(), "EOF") {
+				// Логируем только необычные ошибки, а не стандартные таймауты
+				log.Printf("Ошибка соединения с Telegram API: %v", err)
+			}
+
+			// Восстанавливаем соединение
+			reconnect <- struct{}{}
+		case <-reconnect:
+			// Пробуем восстановить подключение
+			updates = client.GetUpdatesChan(updateConfig)
 		}
+	}
+}
 
-		// Запускаем обработку каждого сообщения в отдельной горутине для одновременной работы с несколькими пользователями
-		go handleMessage(bot, update.Message)
+// monitorConnection следит за соединением с Telegram API
+func monitorConnection(bot *tgbotapi.BotAPI, errorChan chan<- error, reconnect chan<- struct{}) {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		_, err := bot.GetMe()
+		if err != nil {
+			errorChan <- err
+		}
 	}
 }
 
@@ -102,6 +136,38 @@ func acquireSemaphore() {
 // Функция для освобождения семафора
 func releaseSemaphore() {
 	<-downloadSemaphore
+}
+
+// isJustLink проверяет, является ли сообщение "чистой" ссылкой (содержит только ссылку)
+func isJustLink(text string, regex *regexp.Regexp) bool {
+	// Очищаем текст от пробелов в начале и конце
+	trimmedText := strings.TrimSpace(text)
+
+	// Извлекаем все ссылки из текста
+	matches := regex.FindAllString(trimmedText, -1)
+	if len(matches) == 0 {
+		return false
+	}
+
+	// Проверяем, является ли текст только ссылкой (с возможными пробелами в начале/конце)
+	return len(trimmedText) == len(matches[0])
+}
+
+// extractLink извлекает ссылку из текста сообщения
+func extractLink(text string) string {
+	// Ищем Instagram ссылку
+	instagramMatches := instagramRegex.FindStringSubmatch(text)
+	if len(instagramMatches) > 0 {
+		return instagramMatches[0]
+	}
+
+	// Ищем Twitter ссылку
+	twitterMatches := twitterRegex.FindStringSubmatch(text)
+	if len(twitterMatches) > 0 {
+		return twitterMatches[0]
+	}
+
+	return text // Возвращаем исходный текст, если ссылка не найдена
 }
 
 // handleMessage обрабатывает входящее сообщение
@@ -171,8 +237,11 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 		}
 	}
 
+	// Извлекаем ссылку из сообщения (особенно важно для групповых чатов)
+	messageText := extractLink(message.Text)
+
 	// Обработка ссылок
-	if instagramRegex.MatchString(message.Text) {
+	if instagramRegex.MatchString(messageText) {
 		// Отправка сообщения о получении ссылки
 		processingMsg, _ := bot.Send(
 			tgbotapi.NewMessage(chatID, "Обрабатываю Instagram ссылку..."))
@@ -182,7 +251,7 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 		defer releaseSemaphore()
 
 		// Скачивание видео
-		videoPath, err := downloader.DownloadInstagramVideo(message.Text, userID)
+		videoPath, err := downloader.DownloadInstagramVideo(messageText, userID)
 		if err != nil {
 			errorMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Ошибка при скачивании видео: %v", err))
 			bot.Send(errorMsg)
@@ -197,7 +266,7 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 		// Запускаем очистку старых файлов для этого пользователя
 		go cleanupOldFiles(userID)
 
-	} else if twitterRegex.MatchString(message.Text) {
+	} else if twitterRegex.MatchString(messageText) {
 		// Отправка сообщения о получении ссылки
 		processingMsg, _ := bot.Send(
 			tgbotapi.NewMessage(chatID, "Обрабатываю Twitter/X ссылку..."))
@@ -207,7 +276,7 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 		defer releaseSemaphore()
 
 		// Скачивание видео
-		videoPath, err := downloader.DownloadTwitterVideo(message.Text, userID)
+		videoPath, err := downloader.DownloadTwitterVideo(messageText, userID)
 		if err != nil {
 			errorMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Ошибка при скачивании видео: %v", err))
 			bot.Send(errorMsg)
@@ -229,21 +298,6 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 			"Пожалуйста, отправьте ссылку на пост Instagram или Twitter, содержащий видео.")
 		bot.Send(msg)
 	}
-}
-
-// isJustLink проверяет, является ли сообщение "чистой" ссылкой (содержит только ссылку)
-func isJustLink(text string, regex *regexp.Regexp) bool {
-	// Очищаем текст от пробелов в начале и конце
-	trimmedText := strings.TrimSpace(text)
-
-	// Извлекаем все ссылки из текста
-	matches := regex.FindAllString(trimmedText, -1)
-	if len(matches) == 0 {
-		return false
-	}
-
-	// Проверяем, является ли текст только ссылкой (с возможными пробелами в начале/конце)
-	return len(trimmedText) == len(matches[0])
 }
 
 // Удаление сообщения после задержки (в секундах)
