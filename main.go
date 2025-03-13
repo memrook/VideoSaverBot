@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -49,6 +50,9 @@ func main() {
 	bot.Debug = *debugModeFlag // Установка режима отладки из параметра
 	log.Printf("Авторизован как %s (Режим отладки: %v)", bot.Self.UserName, bot.Debug)
 
+	// Настраиваем команды бота
+	setupBotCommands(bot)
+
 	// Запускаем фоновую задачу для периодической очистки старых файлов
 	go startPeriodicCleanup()
 
@@ -69,6 +73,27 @@ func main() {
 	}
 }
 
+// setupBotCommands устанавливает список команд бота для отображения в меню
+func setupBotCommands(bot *tgbotapi.BotAPI) {
+	commands := []tgbotapi.BotCommand{
+		{Command: "start", Description: "Начать работу с ботом"},
+		{Command: "help", Description: "Показать инструкцию по использованию"},
+	}
+
+	// Устанавливаем команды для обычных чатов
+	_, err := bot.Request(tgbotapi.NewSetMyCommands(commands...))
+	if err != nil {
+		log.Printf("Ошибка при установке команд бота: %v", err)
+	}
+
+	// Устанавливаем команды для групповых чатов
+	scope := tgbotapi.NewBotCommandScopeAllGroupChats()
+	_, err = bot.Request(tgbotapi.NewSetMyCommandsWithScope(scope, commands...))
+	if err != nil {
+		log.Printf("Ошибка при установке команд бота для групповых чатов: %v", err)
+	}
+}
+
 // Функция для получения семафора (блокирует, если достигнут лимит)
 func acquireSemaphore() {
 	downloadSemaphore <- struct{}{}
@@ -82,24 +107,75 @@ func releaseSemaphore() {
 // handleMessage обрабатывает входящее сообщение
 func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 	userID := message.From.ID
+	chatID := message.Chat.ID
+	isGroup := message.Chat.IsGroup() || message.Chat.IsSuperGroup()
 
-	log.Printf("[%s] %s", message.From.UserName, message.Text)
+	if bot.Debug {
+		log.Printf("[%s] %s в чате %d (групповой: %v)", message.From.UserName, message.Text, chatID, isGroup)
+	}
 
-	// Отправка приветственного сообщения при команде /start
-	if message.IsCommand() && message.Command() == "start" {
-		msg := tgbotapi.NewMessage(message.Chat.ID,
-			"Привет! Я бот для скачивания видео из Instagram и Twitter (X). "+
-				"Просто отправь мне ссылку на пост, и я сохраню для тебя видео. "+
-				"Теперь с улучшенной технологией извлечения видео и повышенной стабильностью!")
-		bot.Send(msg)
-		return
+	// Для групповых чатов обрабатываем только команды и сообщения, адресованные боту
+	if isGroup {
+		// Проверяем, упоминается ли бот в сообщении (для групповых чатов)
+		mentionsBot := false
+		if message.Entities != nil {
+			for _, entity := range message.Entities {
+				if entity.Type == "mention" {
+					mention := message.Text[entity.Offset : entity.Offset+entity.Length]
+					if strings.Contains(mention, "@"+bot.Self.UserName) {
+						mentionsBot = true
+						break
+					}
+				}
+			}
+		}
+
+		// В группах обрабатываем только прямые команды или упоминания бота, или чистые ссылки
+		if !message.IsCommand() && !mentionsBot &&
+			!isJustLink(message.Text, instagramRegex) &&
+			!isJustLink(message.Text, twitterRegex) {
+			return // Игнорируем сообщения в группах, если они не адресованы боту и не являются чистыми ссылками
+		}
+	}
+
+	// Обработка команд
+	if message.IsCommand() {
+		switch message.Command() {
+		case "start":
+			// В групповых чатах отправляем краткое приветствие
+			if isGroup {
+				msg := tgbotapi.NewMessage(chatID,
+					"Привет! Я готов скачивать видео из Instagram и Twitter. Просто отправь мне ссылку.")
+				bot.Send(msg)
+			} else {
+				// В личных чатах отправляем полное приветствие
+				msg := tgbotapi.NewMessage(chatID,
+					"Привет! Я бот для скачивания видео из Instagram и Twitter (X). "+
+						"Просто отправь мне ссылку на пост, и я сохраню для тебя видео. "+
+						"Теперь с улучшенной технологией извлечения видео и повышенной стабильностью!")
+				bot.Send(msg)
+			}
+			return
+		case "help":
+			helpText := "🔍 *Как использовать*:\n\n" +
+				"1. Найдите видео в Instagram или Twitter (X)\n" +
+				"2. Скопируйте ссылку на пост\n" +
+				"3. Отправьте мне эту ссылку\n" +
+				"4. Дождитесь загрузки и получите видео\n\n" +
+				"*В групповых чатах*: Я обрабатываю только ссылки на видео или сообщения, в которых меня упоминают (@" + bot.Self.UserName + ")"
+
+			msg := tgbotapi.NewMessage(chatID, helpText)
+			msg.ParseMode = "Markdown"
+			bot.Send(msg)
+			return
+		}
 	}
 
 	// Обработка ссылок
 	if instagramRegex.MatchString(message.Text) {
 		// Отправка сообщения о получении ссылки
 		processingMsg, _ := bot.Send(
-			tgbotapi.NewMessage(message.Chat.ID, "Обрабатываю Instagram ссылку..."))
+			tgbotapi.NewMessage(chatID, "Обрабатываю Instagram ссылку..."))
 
 		// Получаем семафор (блокирует, если достигнут лимит одновременных скачиваний)
 		acquireSemaphore()
@@ -108,15 +184,15 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 		// Скачивание видео
 		videoPath, err := downloader.DownloadInstagramVideo(message.Text, userID)
 		if err != nil {
-			errorMsg := tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("Ошибка при скачивании видео: %v", err))
+			errorMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Ошибка при скачивании видео: %v", err))
 			bot.Send(errorMsg)
 			// Удаляем сообщение об ошибке через 10 секунд
-			go deleteMessageAfterDelay(bot, message.Chat.ID, processingMsg.MessageID, 10)
+			go deleteMessageAfterDelay(bot, chatID, processingMsg.MessageID, 10)
 			return
 		}
 
 		// Отправка видео и удаление сообщения о загрузке
-		sendVideo(bot, message.Chat.ID, videoPath, userID, processingMsg.MessageID)
+		sendVideo(bot, chatID, videoPath, userID, processingMsg.MessageID)
 
 		// Запускаем очистку старых файлов для этого пользователя
 		go cleanupOldFiles(userID)
@@ -124,7 +200,7 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 	} else if twitterRegex.MatchString(message.Text) {
 		// Отправка сообщения о получении ссылки
 		processingMsg, _ := bot.Send(
-			tgbotapi.NewMessage(message.Chat.ID, "Обрабатываю Twitter/X ссылку..."))
+			tgbotapi.NewMessage(chatID, "Обрабатываю Twitter/X ссылку..."))
 
 		// Получаем семафор (блокирует, если достигнут лимит одновременных скачиваний)
 		acquireSemaphore()
@@ -133,32 +209,48 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 		// Скачивание видео
 		videoPath, err := downloader.DownloadTwitterVideo(message.Text, userID)
 		if err != nil {
-			errorMsg := tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("Ошибка при скачивании видео: %v", err))
+			errorMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Ошибка при скачивании видео: %v", err))
 			bot.Send(errorMsg)
 			// Удаляем сообщение об ошибке через 10 секунд
-			go deleteMessageAfterDelay(bot, message.Chat.ID, processingMsg.MessageID, 10)
+			go deleteMessageAfterDelay(bot, chatID, processingMsg.MessageID, 10)
 			return
 		}
 
 		// Отправка видео и удаление сообщения о загрузке
-		sendVideo(bot, message.Chat.ID, videoPath, userID, processingMsg.MessageID)
+		sendVideo(bot, chatID, videoPath, userID, processingMsg.MessageID)
 
 		// Запускаем очистку старых файлов для этого пользователя
 		go cleanupOldFiles(userID)
 
-	} else {
-		// Если сообщение не содержит ссылку на Instagram или Twitter
-		msg := tgbotapi.NewMessage(message.Chat.ID,
+	} else if !isGroup {
+		// Если сообщение не содержит ссылку на Instagram или Twitter и это личный чат
+		// В групповых чатах не отвечаем на сообщения без ссылок
+		msg := tgbotapi.NewMessage(chatID,
 			"Пожалуйста, отправьте ссылку на пост Instagram или Twitter, содержащий видео.")
 		bot.Send(msg)
 	}
+}
+
+// isJustLink проверяет, является ли сообщение "чистой" ссылкой (содержит только ссылку)
+func isJustLink(text string, regex *regexp.Regexp) bool {
+	// Очищаем текст от пробелов в начале и конце
+	trimmedText := strings.TrimSpace(text)
+
+	// Извлекаем все ссылки из текста
+	matches := regex.FindAllString(trimmedText, -1)
+	if len(matches) == 0 {
+		return false
+	}
+
+	// Проверяем, является ли текст только ссылкой (с возможными пробелами в начале/конце)
+	return len(trimmedText) == len(matches[0])
 }
 
 // Удаление сообщения после задержки (в секундах)
 func deleteMessageAfterDelay(bot *tgbotapi.BotAPI, chatID int64, messageID int, delaySeconds int) {
 	time.Sleep(time.Duration(delaySeconds) * time.Second)
 	deleteMsg := tgbotapi.NewDeleteMessage(chatID, messageID)
-	if _, err := bot.Send(deleteMsg); err != nil {
+	if _, err := bot.Request(deleteMsg); err != nil {
 		log.Printf("Не удалось удалить сообщение %d: %v", messageID, err)
 	}
 }
@@ -176,7 +268,7 @@ func sendVideo(bot *tgbotapi.BotAPI, chatID int64, videoPath string, userID int6
 	defer func() {
 		// Удаляем сообщение "Обрабатываю..." независимо от результата
 		deleteMsg := tgbotapi.NewDeleteMessage(chatID, processingMsgID)
-		if _, delErr := bot.Send(deleteMsg); delErr != nil {
+		if _, delErr := bot.Request(deleteMsg); delErr != nil {
 			log.Printf("Не удалось удалить служебное сообщение %d: %v", processingMsgID, delErr)
 		}
 
