@@ -8,7 +8,7 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/url"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,6 +23,14 @@ import (
 
 // Мьютекс для синхронизации создания директорий
 var tempDirMutex = &sync.Mutex{}
+
+// min возвращает минимальное из двух чисел
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 
 // SnapsaveResponse представляет ответ от API snapsave.app
 type SnapsaveResponse struct {
@@ -56,6 +64,8 @@ func decodeSnapApp(args []string) string {
 	}
 
 	h, u, n, t, e, r := args[0], args[1], args[2], args[3], args[4], args[5]
+	_ = u // используем u для соответствия с TypeScript
+	_ = r // используем r для соответствия с TypeScript
 
 	tNum, err := strconv.Atoi(t)
 	if err != nil {
@@ -67,28 +77,17 @@ func decodeSnapApp(args []string) string {
 		return ""
 	}
 
-	// Функция decode из TypeScript
+	// Функция decode из TypeScript - точное соответствие
 	decode := func(d string, e, f int) string {
-		chars := "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+/"
-		g := strings.Split(chars, "")
+		g := strings.Split("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+/", "")
+		hArr := g[:e] // g.slice(0, e)
+		iArr := g[:f] // g.slice(0, f)
 
-		var hArr, iArr []string
-		if e <= len(g) {
-			hArr = g[:e]
-		} else {
-			hArr = g
-		}
-		if f <= len(g) {
-			iArr = g[:f]
-		} else {
-			iArr = g
-		}
-
-		// Обратный порядок и вычисление j
-		dRunes := []rune(d)
+		// d.split("").reverse().reduce(...)
+		dChars := strings.Split(d, "")
 		j := 0
-		for c := 0; c < len(dRunes); c++ {
-			b := string(dRunes[len(dRunes)-1-c])
+		for c := 0; c < len(dChars); c++ {
+			b := dChars[len(dChars)-1-c] // reverse order
 			idx := -1
 			for i, char := range hArr {
 				if char == b {
@@ -101,12 +100,13 @@ func decodeSnapApp(args []string) string {
 			}
 		}
 
-		// Построение результата
+		// while (j > 0) построение результата
 		k := ""
 		for j > 0 {
 			k = iArr[j%f] + k
-			j = j / f
+			j = int(math.Floor(float64(j) / float64(f))) // Math.floor(j / f)
 		}
+
 		if k == "" {
 			return "0"
 		}
@@ -114,30 +114,24 @@ func decodeSnapApp(args []string) string {
 	}
 
 	result := ""
-	nRunes := []rune(n)
-	hRunes := []rune(h)
+	hLen := len(h)
 
-	if eNum >= len(nRunes) {
-		return ""
-	}
-
-	delimiter := nRunes[eNum]
-
-	for i := 0; i < len(hRunes); {
+	// for (let i = 0, len = h.length; i < len;)
+	for i := 0; i < hLen; {
 		s := ""
-		// Читаем до разделителя
-		for i < len(hRunes) && hRunes[i] != delimiter {
-			s += string(hRunes[i])
+		// while (i < len && h[i] !== n[eNum])
+		for i < hLen && string(h[i]) != string(n[eNum]) {
+			s += string(h[i])
 			i++
 		}
-		i++ // пропускаем разделитель
+		i++ // skip delimiter
 
-		// Заменяем символы из n на их индексы
-		for j, char := range nRunes {
-			s = strings.ReplaceAll(s, string(char), strconv.Itoa(j))
+		// for (let j = 0; j < n.length; j++)
+		for j := 0; j < len(n); j++ {
+			s = strings.ReplaceAll(s, string(n[j]), strconv.Itoa(j))
 		}
 
-		// Декодируем и добавляем символ
+		// String.fromCharCode(Number(decode(s, eNum, 10)) - tNum)
 		decoded := decode(s, eNum, 10)
 		decodedNum, err := strconv.Atoi(decoded)
 		if err != nil {
@@ -152,77 +146,98 @@ func decodeSnapApp(args []string) string {
 	return fixEncoding(result)
 }
 
-// fixEncoding исправляет кодировку UTF-8
+// fixEncoding исправляет кодировку UTF-8 - адаптация TypeScript версии
 func fixEncoding(str string) string {
+	// Точная адаптация TypeScript кода:
+	// const bytes = new Uint8Array(str.split("").map(char => char.charCodeAt(0)));
+	// return new TextDecoder("utf-8").decode(bytes);
+
 	if utf8.ValidString(str) {
 		return str
 	}
 
-	// Пытаемся исправить неправильную кодировку
-	bytes := make([]byte, 0, len(str))
-	for _, char := range str {
-		if char <= 255 {
-			bytes = append(bytes, byte(char))
+	// Преобразуем символы в байты как в TypeScript
+	chars := []rune(str)
+	bytes := make([]byte, 0, len(chars))
+
+	for _, char := range chars {
+		// Аналогично charCodeAt(0) в JavaScript
+		charCode := int(char)
+		if charCode >= 0 && charCode <= 255 {
+			bytes = append(bytes, byte(charCode))
 		}
 	}
 
+	// Проверяем, является ли результат валидным UTF-8
 	if utf8.Valid(bytes) {
 		return string(bytes)
 	}
 
+	// Если все еще не валидно, возвращаем оригинальную строку
 	return str
 }
 
-// getEncodedSnapApp извлекает закодированные данные из HTML
+// getEncodedSnapApp извлекает закодированные данные из HTML - точная копия TypeScript версии
 func getEncodedSnapApp(data string) []string {
-	// Ищем паттерн: decodeURIComponent(escape(r))}(
-	startPattern := "decodeURIComponent(escape(r))}("
-	endPattern := "))"
 
-	startIdx := strings.Index(data, startPattern)
-	if startIdx == -1 {
+	// Точное соответствие TypeScript: data.split("decodeURIComponent(escape(r))}(")[1]
+	parts := strings.Split(data, "decodeURIComponent(escape(r))}(")
+	if len(parts) < 2 {
+
+		// Попробуем найти _0xe98c функцию или другие характерные элементы
+		if strings.Contains(data, "_0xe98c") {
+			// Попробуем извлечь параметры из eval или подобных конструкций
+			return tryExtractObfuscatedParams(data)
+		}
+
 		return nil
 	}
 
-	startIdx += len(startPattern)
-	endIdx := strings.Index(data[startIdx:], endPattern)
-	if endIdx == -1 {
+	// .split("))")[0]
+	innerParts := strings.Split(parts[1], "))")
+	if len(innerParts) < 1 {
 		return nil
 	}
 
-	encoded := data[startIdx : startIdx+endIdx]
+	encoded := innerParts[0]
 
-	// Разделяем по запятым и очищаем от кавычек
-	parts := strings.Split(encoded, ",")
-	result := make([]string, 0, len(parts))
+	// .split(",").map(v => v.replace(/"/g, "").trim())
+	commaParts := strings.Split(encoded, ",")
+	result := make([]string, 0, len(commaParts))
 
-	for _, part := range parts {
-		cleaned := strings.Trim(strings.TrimSpace(part), "\"'")
+	for _, part := range commaParts {
+		cleaned := strings.ReplaceAll(strings.TrimSpace(part), "\"", "")
 		result = append(result, cleaned)
 	}
 
 	return result
 }
 
-// getDecodedSnapSave извлекает декодированные данные SnapSave
+// tryExtractObfuscatedParams пытается извлечь параметры из обфусцированного кода
+func tryExtractObfuscatedParams(data string) []string {
+	// Пока что возвращаем nil, чтобы перейти к fallback методу
+	// В будущем здесь можно реализовать более сложную логику обработки обфусцированного кода
+	return nil
+}
+
+// getDecodedSnapSave извлекает декодированные данные SnapSave - точная копия TypeScript версии
 func getDecodedSnapSave(data string) string {
-	startPattern := "getElementById(\"download-section\").innerHTML = \""
-	endPattern := "\"; document.getElementById(\"inputData\").remove(); "
-
-	startIdx := strings.Index(data, startPattern)
-	if startIdx == -1 {
+	// data.split("getElementById(\"download-section\").innerHTML = \"")[1]
+	parts := strings.Split(data, "getElementById(\"download-section\").innerHTML = \"")
+	if len(parts) < 2 {
 		return ""
 	}
 
-	startIdx += len(startPattern)
-	endIdx := strings.Index(data[startIdx:], endPattern)
-	if endIdx == -1 {
+	// .split("\"; document.getElementById(\"inputData\").remove(); ")[0]
+	innerParts := strings.Split(parts[1], "\"; document.getElementById(\"inputData\").remove(); ")
+	if len(innerParts) < 1 {
 		return ""
 	}
 
-	result := data[startIdx : startIdx+endIdx]
-	// Убираем экранирование
-	result = strings.ReplaceAll(result, "\\\\", "\\")
+	result := innerParts[0]
+
+	// .replace(/\\(\\)?/g, "") - удаляем одинарные и двойные обратные слеши
+	result = strings.ReplaceAll(result, "\\\\", "")
 	result = strings.ReplaceAll(result, "\\", "")
 
 	return result
@@ -238,25 +253,24 @@ func decryptSnapSave(data string) string {
 	return getDecodedSnapSave(decoded)
 }
 
-// getDecodedSnaptik извлекает декодированные данные Snaptik
+// getDecodedSnaptik извлекает декодированные данные Snaptik - точная копия TypeScript версии
 func getDecodedSnaptik(data string) string {
-	startPattern := "$(\"#download\").innerHTML = \""
-	endPattern := "\"; document.getElementById(\"inputData\").remove(); "
-
-	startIdx := strings.Index(data, startPattern)
-	if startIdx == -1 {
+	// data.split("$(\"#download\").innerHTML = \"")[1]
+	parts := strings.Split(data, "$(\"#download\").innerHTML = \"")
+	if len(parts) < 2 {
 		return ""
 	}
 
-	startIdx += len(startPattern)
-	endIdx := strings.Index(data[startIdx:], endPattern)
-	if endIdx == -1 {
+	// .split("\"; document.getElementById(\"inputData\").remove(); ")[0]
+	innerParts := strings.Split(parts[1], "\"; document.getElementById(\"inputData\").remove(); ")
+	if len(innerParts) < 1 {
 		return ""
 	}
 
-	result := data[startIdx : startIdx+endIdx]
-	// Убираем экранирование
-	result = strings.ReplaceAll(result, "\\\\", "\\")
+	result := innerParts[0]
+
+	// .replace(/\\(\\)?/g, "") - удаляем одинарные и двойные обратные слеши
+	result = strings.ReplaceAll(result, "\\\\", "")
 	result = strings.ReplaceAll(result, "\\", "")
 
 	return result
@@ -281,9 +295,15 @@ func normalizeURL(url string) string {
 	}
 
 	// Для других URL добавляем www, если его нет
-	re := regexp.MustCompile(`^(https?://)(?!www\.)[a-z0-9]+`)
-	if re.MatchString(url) {
-		return regexp.MustCompile(`^(https?://)([^./]+\.[^./]+)(\/.*)?$`).ReplaceAllString(url, "$1www.$2$3")
+	// Проверяем, что URL начинается с http(s):// и НЕ содержит www
+	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+		if !strings.Contains(url, "://www.") {
+			// Заменяем протокол://домен на протокол://www.домен
+			re := regexp.MustCompile(`^(https?://)([^./]+\.[^./]+)(\/.*)?$`)
+			if re.MatchString(url) {
+				return re.ReplaceAllString(url, "$1www.$2$3")
+			}
+		}
 	}
 
 	return url
@@ -293,7 +313,7 @@ func normalizeURL(url string) string {
 func fixThumbnail(url string) string {
 	toReplace := "https://snapinsta.app/photo.php?photo="
 	if strings.Contains(url, toReplace) {
-		decoded, err := url.QueryUnescape(strings.Replace(url, toReplace, "", 1))
+		decoded, err := neturl.QueryUnescape(strings.Replace(url, toReplace, "", 1))
 		if err != nil {
 			return url
 		}
@@ -377,6 +397,7 @@ func getSnapsaveVideoURL(mediaURL string) (string, error) {
 
 // getSnapsaveVideoURLTikTok получает URL видео из TikTok через snaptik.app
 func getSnapsaveVideoURLTikTok(mediaURL string) (string, error) {
+
 	// Создаем HTTP-клиент
 	client := &http.Client{
 		Timeout: 30 * time.Second,
@@ -412,7 +433,7 @@ func getSnapsaveVideoURLTikTok(mediaURL string) (string, error) {
 	}
 
 	// Шаг 2: Отправляем POST-запрос с URL и токеном
-	formData := url.Values{}
+	formData := neturl.Values{}
 	formData.Set("url", mediaURL)
 	formData.Set("token", token)
 
@@ -458,7 +479,15 @@ func getSnapsaveVideoURLTikTok(mediaURL string) (string, error) {
 	// Ищем ссылку на видео
 	videoURL, exists := doc.Find(".download-box > .video-links > a").Attr("href")
 	if !exists || videoURL == "" {
-		return "", fmt.Errorf("видео URL не найден в ответе snaptik")
+		// Попробуем другие селекторы
+		videoURL, exists = doc.Find("a[download]").Attr("href")
+		if !exists || videoURL == "" {
+			videoURL, exists = doc.Find("a[href*='.mp4']").Attr("href")
+			if !exists || videoURL == "" {
+				// Выведем структуру HTML для отладки
+				return "", fmt.Errorf("видео URL не найден в ответе snaptik")
+			}
+		}
 	}
 
 	return videoURL, nil
@@ -501,7 +530,7 @@ func getSnapsaveVideoURLTwitter(mediaURL string) (string, error) {
 	}
 
 	// Шаг 2: Отправляем POST-запрос с URL и токеном
-	formData := url.Values{}
+	formData := neturl.Values{}
 	formData.Set("url", mediaURL)
 	formData.Set("token", token)
 
@@ -565,7 +594,7 @@ func getSnapsaveVideoURLInstagramFacebook(mediaURL string) (string, error) {
 	apiURL := "https://snapsave.app/action.php?lang=en"
 
 	// Подготавливаем данные для POST-запроса
-	formData := url.Values{}
+	formData := neturl.Values{}
 	formData.Set("url", normalizeURL(mediaURL))
 
 	// Создаем HTTP-клиент
@@ -736,6 +765,10 @@ func fallbackDownload(mediaURL string, userID int64, platform PlatformType) (str
 		return fallbackInstagramDownload(mediaURL, userID)
 	case Twitter:
 		return fallbackTwitterDownload(mediaURL, userID)
+	case TikTok:
+		return fallbackTikTokDownload(mediaURL, userID)
+	case Facebook:
+		return fallbackFacebookDownload(mediaURL, userID)
 	default:
 		return "", fmt.Errorf("платформа %s не поддерживается в fallback режиме", platform)
 	}
@@ -911,6 +944,105 @@ func fallbackTwitterDownload(url string, userID int64) (string, error) {
 	}
 
 	return downloadMedia(videoURL, outputPath)
+}
+
+// fallbackTikTokDownload резервный метод для TikTok через tikmate.online
+func fallbackTikTokDownload(url string, userID int64) (string, error) {
+
+	// Создаем выходную директорию
+	outputPath, err := createUserDirectory(userID, "tiktok")
+	if err != nil {
+		return "", err
+	}
+
+	// Создаем HTTP-клиент
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	// Отправляем POST-запрос к tikmate.online API
+	formData := neturl.Values{}
+	formData.Set("url", url)
+
+	req, err := http.NewRequest("POST", "https://tikmate.online/download", strings.NewReader(formData.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("ошибка создания запроса к tikmate.online: %v", err)
+	}
+
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", getUserAgent())
+	req.Header.Set("Origin", "https://tikmate.online")
+	req.Header.Set("Referer", "https://tikmate.online/")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("ошибка запроса к tikmate.online: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("неверный статус код от tikmate.online: %d", resp.StatusCode)
+	}
+
+	// Читаем ответ как JSON
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("ошибка чтения ответа от tikmate.online: %v", err)
+	}
+
+	// Парсим JSON ответ
+	var response struct {
+		Success bool `json:"success"`
+		Data    struct {
+			VideoURL string `json:"play"`
+		} `json:"data"`
+	}
+
+	err = json.Unmarshal(body, &response)
+	if err != nil {
+		// Если JSON не парсится, пробуем извлечь URL регулярными выражениями
+		return fallbackTikTokRegexExtract(string(body), outputPath)
+	}
+
+	if !response.Success || response.Data.VideoURL == "" {
+		return "", fmt.Errorf("tikmate.online не смог обработать URL")
+	}
+
+	return downloadMedia(response.Data.VideoURL, outputPath)
+}
+
+// fallbackTikTokRegexExtract извлекает URL видео регулярными выражениями
+func fallbackTikTokRegexExtract(htmlContent string, outputPath string) (string, error) {
+	// Ищем различные паттерны URL видео
+	patterns := []string{
+		`"play":"([^"]+)"`,
+		`"video_url":"([^"]+)"`,
+		`"download_url":"([^"]+)"`,
+		`href="([^"]*\.mp4[^"]*)"`,
+	}
+
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(pattern)
+		matches := re.FindStringSubmatch(htmlContent)
+		if len(matches) > 1 {
+			videoURL := matches[1]
+			// Декодируем URL если нужно
+			videoURL = strings.ReplaceAll(videoURL, "\\u0026", "&")
+			videoURL = strings.ReplaceAll(videoURL, "\\/", "/")
+
+			return downloadMedia(videoURL, outputPath)
+		}
+	}
+
+	return "", fmt.Errorf("не удалось найти URL видео в fallback режиме для TikTok")
+}
+
+// fallbackFacebookDownload резервный метод для Facebook (простой подход)
+func fallbackFacebookDownload(url string, userID int64) (string, error) {
+	// Для Facebook пока что просто возвращаем ошибку, так как fallback методы сложны
+	// В будущем можно добавить альтернативные API
+	return "", fmt.Errorf("Facebook fallback метод пока не реализован - попробуйте позже")
 }
 
 // downloadMedia скачивает медиа по URL и сохраняет его в outputPath

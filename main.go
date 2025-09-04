@@ -20,7 +20,7 @@ var (
 	instagramRegex = regexp.MustCompile(`^https?://(?:www\.)?instagram\.com/(?:p|reel|reels|tv|stories|share)/([^/?#&]+).*`)
 	twitterRegex   = regexp.MustCompile(`^https://(?:x|twitter)\.com(?:/(?:i/web|[^/]+)/status/(\d+)(?:.*)?)?$`)
 	tiktokRegex    = regexp.MustCompile(`^https?://(?:www\.|m\.|vm\.|vt\.)?tiktok\.com/(?:@[^/]+/(?:video|photo)/\d+|v/\d+|t/[\w]+|[\w]+)/?`)
-	facebookRegex  = regexp.MustCompile(`^https?://(?:www\.|web\.|m\.)?facebook\.com/(?:watch(?:\?v=|/\?v=)[0-9]+(?!/)|reel/[0-9]+|[a-zA-Z0-9.\-_]+/(?:videos|posts)/[0-9]+|[0-9]+/(?:videos|posts)/[0-9]+|[a-zA-Z0-9]+/(?:videos|posts)/[0-9]+|share/(?:v|r)/[a-zA-Z0-9]+/?)(?:[^/?#&]+).*$|^https://fb\.watch/[a-zA-Z0-9]+$`)
+	facebookRegex  = regexp.MustCompile(`^https?://(?:www\.|web\.|m\.)?facebook\.com/(?:watch\?v=[0-9]+|watch/\?v=[0-9]+|reel/[0-9]+|[a-zA-Z0-9.\-_]+/(?:videos|posts)/[0-9]+|[0-9]+/(?:videos|posts)/[0-9]+|share/(?:v|r)/[a-zA-Z0-9]+)(?:[^/?#&]+.*)?$|^https://fb\.watch/[a-zA-Z0-9]+$`)
 
 	// User Agent для запросов (синхронизирован с snapsave-media-downloader)
 	userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
