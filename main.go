@@ -16,8 +16,15 @@ import (
 )
 
 var (
-	instagramRegex = regexp.MustCompile(`https?://(www\.)?(instagram\.com|instagr\.am)/(p|reel)/[a-zA-Z0-9_-]+`)
-	twitterRegex   = regexp.MustCompile(`https?://(www\.)?(twitter\.com|x\.com)/[a-zA-Z0-9_]+/status/[0-9]+`)
+	// Точные регулярные выражения из snapsave-media-downloader
+	instagramRegex = regexp.MustCompile(`^https?://(?:www\.)?instagram\.com/(?:p|reel|reels|tv|stories|share)/([^/?#&]+).*`)
+	twitterRegex   = regexp.MustCompile(`^https://(?:x|twitter)\.com(?:/(?:i/web|[^/]+)/status/(\d+)(?:.*)?)?$`)
+	tiktokRegex    = regexp.MustCompile(`^https?://(?:www\.|m\.|vm\.|vt\.)?tiktok\.com/(?:@[^/]+/(?:video|photo)/\d+|v/\d+|t/[\w]+|[\w]+)/?`)
+	facebookRegex  = regexp.MustCompile(`^https?://(?:www\.|web\.|m\.)?facebook\.com/(?:watch(?:\?v=|/\?v=)[0-9]+(?!/)|reel/[0-9]+|[a-zA-Z0-9.\-_]+/(?:videos|posts)/[0-9]+|[0-9]+/(?:videos|posts)/[0-9]+|[a-zA-Z0-9]+/(?:videos|posts)/[0-9]+|share/(?:v|r)/[a-zA-Z0-9]+/?)(?:[^/?#&]+).*$|^https://fb\.watch/[a-zA-Z0-9]+$`)
+
+	// User Agent для запросов (синхронизирован с snapsave-media-downloader)
+	userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+
 	// Семафор для ограничения количества одновременных запросов на скачивание
 	downloadSemaphore chan struct{}
 )
@@ -167,6 +174,18 @@ func extractLink(text string) string {
 		return twitterMatches[0]
 	}
 
+	// Ищем TikTok ссылку
+	tiktokMatches := tiktokRegex.FindStringSubmatch(text)
+	if len(tiktokMatches) > 0 {
+		return tiktokMatches[0]
+	}
+
+	// Ищем Facebook ссылку
+	facebookMatches := facebookRegex.FindStringSubmatch(text)
+	if len(facebookMatches) > 0 {
+		return facebookMatches[0]
+	}
+
 	return text // Возвращаем исходный текст, если ссылка не найдена
 }
 
@@ -199,7 +218,9 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 		// В группах обрабатываем только прямые команды или упоминания бота, или чистые ссылки
 		if !message.IsCommand() && !mentionsBot &&
 			!isJustLink(message.Text, instagramRegex) &&
-			!isJustLink(message.Text, twitterRegex) {
+			!isJustLink(message.Text, twitterRegex) &&
+			!isJustLink(message.Text, tiktokRegex) &&
+			!isJustLink(message.Text, facebookRegex) {
 			return // Игнорируем сообщения в группах, если они не адресованы боту и не являются чистыми ссылками
 		}
 	}
@@ -211,23 +232,28 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 			// В групповых чатах отправляем краткое приветствие
 			if isGroup {
 				msg := tgbotapi.NewMessage(chatID,
-					"Привет! Я готов скачивать видео из Instagram и Twitter. Просто отправь мне ссылку.")
+					"Привет! Я готов скачивать видео из Instagram, Twitter, TikTok и Facebook. Просто отправь мне ссылку.")
 				bot.Send(msg)
 			} else {
 				// В личных чатах отправляем полное приветствие
 				msg := tgbotapi.NewMessage(chatID,
-					"Привет! Я бот для скачивания видео из Instagram и Twitter (X). "+
-						"Просто отправь мне ссылку на пост, и я сохраню для тебя видео. "+
-						"Теперь с улучшенной технологией извлечения видео и повышенной стабильностью!")
+					"Привет! Я бот для скачивания видео из Instagram, Twitter (X), TikTok и Facebook. "+
+						"Просто отправь мне ссылку на пост, и я сохраню для тебя видео.\n\n"+
+						"🆕 Теперь поддерживаю больше платформ благодаря интеграции с snapsave.app!")
 				bot.Send(msg)
 			}
 			return
 		case "help":
 			helpText := "🔍 *Как использовать*:\n\n" +
-				"1. Найдите видео в Instagram или Twitter (X)\n" +
+				"1. Найдите видео в Instagram, Twitter (X), TikTok или Facebook\n" +
 				"2. Скопируйте ссылку на пост\n" +
 				"3. Отправьте мне эту ссылку\n" +
 				"4. Дождитесь загрузки и получите видео\n\n" +
+				"*Поддерживаемые платформы*:\n" +
+				"• Instagram (посты и reels)\n" +
+				"• Twitter/X\n" +
+				"• TikTok\n" +
+				"• Facebook\n\n" +
 				"*В групповых чатах*: Я обрабатываю только ссылки на видео или сообщения, в которых меня упоминают (@" + bot.Self.UserName + ")"
 
 			msg := tgbotapi.NewMessage(chatID, helpText)
@@ -291,11 +317,61 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 		// Запускаем очистку старых файлов для этого пользователя
 		go cleanupOldFiles(userID)
 
+	} else if tiktokRegex.MatchString(messageText) {
+		// Отправка сообщения о получении ссылки
+		processingMsg, _ := bot.Send(
+			tgbotapi.NewMessage(chatID, "Обрабатываю TikTok ссылку..."))
+
+		// Получаем семафор (блокирует, если достигнут лимит одновременных скачиваний)
+		acquireSemaphore()
+		defer releaseSemaphore()
+
+		// Скачивание видео
+		videoPath, err := downloader.DownloadTikTokVideo(messageText, userID)
+		if err != nil {
+			errorMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Ошибка при скачивании видео: %v", err))
+			bot.Send(errorMsg)
+			// Удаляем сообщение об ошибке через 10 секунд
+			go deleteMessageAfterDelay(bot, chatID, processingMsg.MessageID, 10)
+			return
+		}
+
+		// Отправка видео и удаление сообщения о загрузке
+		sendVideo(bot, chatID, videoPath, userID, processingMsg.MessageID)
+
+		// Запускаем очистку старых файлов для этого пользователя
+		go cleanupOldFiles(userID)
+
+	} else if facebookRegex.MatchString(messageText) {
+		// Отправка сообщения о получении ссылки
+		processingMsg, _ := bot.Send(
+			tgbotapi.NewMessage(chatID, "Обрабатываю Facebook ссылку..."))
+
+		// Получаем семафор (блокирует, если достигнут лимит одновременных скачиваний)
+		acquireSemaphore()
+		defer releaseSemaphore()
+
+		// Скачивание видео
+		videoPath, err := downloader.DownloadFacebookVideo(messageText, userID)
+		if err != nil {
+			errorMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Ошибка при скачивании видео: %v", err))
+			bot.Send(errorMsg)
+			// Удаляем сообщение об ошибке через 10 секунд
+			go deleteMessageAfterDelay(bot, chatID, processingMsg.MessageID, 10)
+			return
+		}
+
+		// Отправка видео и удаление сообщения о загрузке
+		sendVideo(bot, chatID, videoPath, userID, processingMsg.MessageID)
+
+		// Запускаем очистку старых файлов для этого пользователя
+		go cleanupOldFiles(userID)
+
 	} else if !isGroup {
-		// Если сообщение не содержит ссылку на Instagram или Twitter и это личный чат
+		// Если сообщение не содержит ссылку на поддерживаемые платформы и это личный чат
 		// В групповых чатах не отвечаем на сообщения без ссылок
 		msg := tgbotapi.NewMessage(chatID,
-			"Пожалуйста, отправьте ссылку на пост Instagram или Twitter, содержащий видео.")
+			"Пожалуйста, отправьте ссылку на пост из Instagram, Twitter, TikTok или Facebook, содержащий видео.")
 		bot.Send(msg)
 	}
 }
