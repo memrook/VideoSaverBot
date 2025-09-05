@@ -810,11 +810,14 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 
 	// Настраиваем параметры yt-dlp для ограничения размера и качества
 	args := []string{
-		"--format", "best[height<=720]/best[filesize<50M]/best",
+		"--format", "best[height<=720][filesize<50M]/best[filesize<50M]/worst[filesize<50M]/worst",
 		"--max-filesize", "50M",
 		"--no-playlist",
 		"--extract-flat", "false",
+		"--ignore-errors",
 		"--no-warnings",
+		"--prefer-free-formats",
+		"--merge-output-format", "mp4",
 		"--output", outputPath,
 		url,
 	}
@@ -823,10 +826,15 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 	cmd := exec.Command("yt-dlp", args...)
 	cmd.Dir = filepath.Dir(outputPath)
 
+	// Захватываем stdout и stderr для диагностики
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
 	// Устанавливаем таймаут для команды
 	timeout := 5 * time.Minute
 	done := make(chan error, 1)
-
+	
 	go func() {
 		done <- cmd.Run()
 	}()
@@ -834,7 +842,29 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 	select {
 	case err := <-done:
 		if err != nil {
-			return "", fmt.Errorf("ошибка выполнения yt-dlp: %v", err)
+			// Логируем детальную информацию об ошибке
+			errorDetails := fmt.Sprintf("yt-dlp failed with exit code: %v\nStdout: %s\nStderr: %s\nCommand: %s", 
+				err, stdout.String(), stderr.String(), strings.Join(append([]string{"yt-dlp"}, args...), " "))
+			
+			// Анализируем типичные ошибки
+			stderrStr := stderr.String()
+			if strings.Contains(stderrStr, "Video unavailable") {
+				return "", fmt.Errorf("видео недоступно (возможно, удалено или приватное)")
+			}
+			if strings.Contains(stderrStr, "Private video") {
+				return "", fmt.Errorf("видео является приватным")
+			}
+			if strings.Contains(stderrStr, "Sign in to confirm your age") {
+				return "", fmt.Errorf("видео имеет возрастные ограничения")
+			}
+			if strings.Contains(stderrStr, "This video is not available") {
+				return "", fmt.Errorf("видео недоступно в вашем регионе")
+			}
+			if strings.Contains(stderrStr, "Requested format is not available") {
+				return "", fmt.Errorf("запрашиваемый формат недоступен")
+			}
+			
+			return "", fmt.Errorf("ошибка выполнения yt-dlp: %v\nДетали: %s", err, errorDetails)
 		}
 	case <-time.After(timeout):
 		if cmd.Process != nil {
