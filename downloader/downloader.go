@@ -832,22 +832,24 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 		return "", fmt.Errorf("yt-dlp недоступен: %v", err)
 	}
 
-	// Сначала пробуем получить информацию о видео для проверки размера
-	infoErr := checkVideoInfo(url)
-	if infoErr != nil {
-		fmt.Printf("Предупреждение: не удалось получить информацию о видео: %v\n", infoErr)
+	// Проверяем доступные форматы и их размеры
+	bestFormat, err := findBestFormat(url)
+	if err != nil {
+		return "", fmt.Errorf("не удалось получить информацию о видео: %v", err)
+	}
+	
+	if bestFormat == "" {
+		return "", fmt.Errorf("видео слишком большое для отправки через Telegram. Все доступные версии превышают 50 МБ. Попробуйте более короткое видео")
 	}
 
-	// Настраиваем параметры yt-dlp для ограничения размера и качества
-	// Принудительно выбираем низкое качество для гарантии размера
+	// Настраиваем параметры yt-dlp с найденным форматом
 	args := []string{
-		"--format", "worst[height<=480]/worst[height<=360]/worst", // Принудительно низкое качество
-		"--max-filesize", "45M", // Немного меньше лимита для безопасности
+		"--format", bestFormat,
+		"--max-filesize", "50M",
 		"--no-playlist",
 		"--merge-output-format", "mp4",
 		"--no-cache-dir",   // Отключаем кэширование для избежания проблем с правами
 		"--abort-on-error", // Прерывать при ошибках
-		"--fragment-retries", "3", // Ограничиваем попытки
 		"--output", outputPath,
 		"--verbose", // Добавляем подробный вывод для диагностики
 		url,
@@ -1064,11 +1066,11 @@ func checkYtDlpAvailability() error {
 	return nil
 }
 
-// checkVideoInfo проверяет информацию о видео без скачивания
-func checkVideoInfo(url string) error {
-	// Получаем информацию о видео без скачивания
+// findBestFormat находит лучший формат видео, который поместится в 50MB
+func findBestFormat(url string) (string, error) {
+	// Получаем JSON информацию о видео для точного анализа
 	args := []string{
-		"--list-formats",
+		"--dump-json",
 		"--no-playlist",
 		url,
 	}
@@ -1081,14 +1083,86 @@ func checkVideoInfo(url string) error {
 	
 	err := cmd.Run()
 	if err != nil {
-		return fmt.Errorf("не удалось получить информацию о видео: %v", err)
+		return "", fmt.Errorf("не удалось получить информацию о видео: %v", err)
 	}
 	
-	// Анализируем доступные форматы
-	output := stdout.String()
-	fmt.Printf("Доступные форматы видео:\n%s\n", output)
+	// Парсим JSON ответ
+	var videoInfo struct {
+		Formats []struct {
+			FormatID   string  `json:"format_id"`
+			FileSize   *int64  `json:"filesize"`
+			FileSizeApprox *int64 `json:"filesize_approx"`
+			Height     *int    `json:"height"`
+			Width      *int    `json:"width"`
+			Ext        string  `json:"ext"`
+			VCodec     string  `json:"vcodec"`
+			ACodec     string  `json:"acodec"`
+			Format     string  `json:"format"`
+		} `json:"formats"`
+		Title    string `json:"title"`
+		Duration *float64 `json:"duration"`
+	}
 	
-	return nil
+	if err := json.Unmarshal([]byte(stdout.String()), &videoInfo); err != nil {
+		return "", fmt.Errorf("ошибка парсинга информации о видео: %v", err)
+	}
+	
+	fmt.Printf("Анализ видео: %s\n", videoInfo.Title)
+	if videoInfo.Duration != nil {
+		fmt.Printf("Длительность: %.1f минут\n", *videoInfo.Duration/60)
+	}
+	
+	const maxSize = 50 * 1024 * 1024 // 50MB
+	var bestFormat string
+	var bestSize int64 = maxSize + 1
+	var bestHeight int = 0
+	
+	// Ищем лучший формат, который поместится в лимит
+	for _, format := range videoInfo.Formats {
+		// Пропускаем аудио-форматы и форматы без видео
+		if format.VCodec == "none" || format.VCodec == "" {
+			continue
+		}
+		
+		// Определяем размер файла
+		var fileSize int64
+		if format.FileSize != nil {
+			fileSize = *format.FileSize
+		} else if format.FileSizeApprox != nil {
+			fileSize = *format.FileSizeApprox
+		} else {
+			// Если размер неизвестен, пропускаем
+			continue
+		}
+		
+		// Проверяем, помещается ли в лимит
+		if fileSize <= maxSize {
+			// Выбираем формат с лучшим качеством среди подходящих
+			height := 0
+			if format.Height != nil {
+				height = *format.Height
+			}
+			
+			if height > bestHeight || (height == bestHeight && fileSize < bestSize) {
+				bestFormat = format.FormatID
+				bestSize = fileSize
+				bestHeight = height
+				fmt.Printf("Найден подходящий формат: %s (%s, %dx%d, %.1f MB)\n", 
+					format.FormatID, format.Format, format.Width, height, float64(fileSize)/(1024*1024))
+			}
+		} else {
+			fmt.Printf("Формат %s слишком большой: %.1f MB\n", 
+				format.FormatID, float64(fileSize)/(1024*1024))
+		}
+	}
+	
+	if bestFormat == "" {
+		fmt.Printf("Не найдено подходящих форматов (все превышают 50MB)\n")
+	} else {
+		fmt.Printf("Выбран лучший формат: %s (%.1f MB)\n", bestFormat, float64(bestSize)/(1024*1024))
+	}
+	
+	return bestFormat, nil
 }
 
 // testYtDlpSimple проводит простой тест yt-dlp с минимальными параметрами
@@ -1102,19 +1176,19 @@ func testYtDlpSimple(url, outputDir string) error {
 		"--verbose",
 		url,
 	}
-	
+
 	cmd := exec.Command("yt-dlp", args...)
 	cmd.Dir = outputDir
-	
+
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	
+
 	err := cmd.Run()
 	fmt.Printf("Test yt-dlp command: %s\n", strings.Join(append([]string{"yt-dlp"}, args...), " "))
 	fmt.Printf("Test stdout: %s\n", stdout.String())
 	fmt.Printf("Test stderr: %s\n", stderr.String())
-	
+
 	return err
 }
 
