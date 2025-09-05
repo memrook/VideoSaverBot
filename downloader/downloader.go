@@ -832,15 +832,22 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 		return "", fmt.Errorf("yt-dlp недоступен: %v", err)
 	}
 
+	// Сначала пробуем получить информацию о видео для проверки размера
+	infoErr := checkVideoInfo(url)
+	if infoErr != nil {
+		fmt.Printf("Предупреждение: не удалось получить информацию о видео: %v\n", infoErr)
+	}
+
 	// Настраиваем параметры yt-dlp для ограничения размера и качества
-	// Используем более строгий контроль размера файла
+	// Принудительно выбираем низкое качество для гарантии размера
 	args := []string{
-		"--format", "worst[height<=720][filesize<50M]/worst[height<=480][filesize<40M]/worst[filesize<30M]/worst",
-		"--max-filesize", "50M",
+		"--format", "worst[height<=480]/worst[height<=360]/worst", // Принудительно низкое качество
+		"--max-filesize", "45M", // Немного меньше лимита для безопасности
 		"--no-playlist",
 		"--merge-output-format", "mp4",
-		"--no-cache-dir", // Отключаем кэширование для избежания проблем с правами
+		"--no-cache-dir",   // Отключаем кэширование для избежания проблем с правами
 		"--abort-on-error", // Прерывать при ошибках
+		"--fragment-retries", "3", // Ограничиваем попытки
 		"--output", outputPath,
 		"--verbose", // Добавляем подробный вывод для диагностики
 		url,
@@ -917,14 +924,14 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 		if strings.Contains(stdoutStr, "has already been downloaded") || strings.Contains(stderrStr, "has already been downloaded") {
 			// Возможно файл уже существует, но мы его не нашли
 		}
-		
+
 		// Проверяем, было ли прервано скачивание из-за размера
 		if strings.Contains(stdoutStr, "aborting") || strings.Contains(stderrStr, "aborting") {
 			return "", fmt.Errorf("скачивание прервано (возможно, из-за превышения размера файла)")
 		}
-		
+
 		// Логируем успешный вывод для отладки
-		fmt.Printf("yt-dlp успешно завершен.\nStdout: %s\nStderr: %s\nCommand: %s\n", 
+		fmt.Printf("yt-dlp успешно завершен.\nStdout: %s\nStderr: %s\nCommand: %s\n",
 			stdoutStr, stderrStr, strings.Join(append([]string{"yt-dlp"}, args...), " "))
 
 	case <-time.After(timeout):
@@ -980,7 +987,7 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 				}
 			}
 		}
-		
+
 		// Если нашли .part файлы, это означает, что скачивание было прервано
 		if partFilesFound {
 			return "", fmt.Errorf("скачивание было прервано, созданы только частичные файлы (возможно, превышен размер или таймаут)")
@@ -1057,6 +1064,33 @@ func checkYtDlpAvailability() error {
 	return nil
 }
 
+// checkVideoInfo проверяет информацию о видео без скачивания
+func checkVideoInfo(url string) error {
+	// Получаем информацию о видео без скачивания
+	args := []string{
+		"--list-formats",
+		"--no-playlist",
+		url,
+	}
+	
+	cmd := exec.Command("yt-dlp", args...)
+	
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	
+	err := cmd.Run()
+	if err != nil {
+		return fmt.Errorf("не удалось получить информацию о видео: %v", err)
+	}
+	
+	// Анализируем доступные форматы
+	output := stdout.String()
+	fmt.Printf("Доступные форматы видео:\n%s\n", output)
+	
+	return nil
+}
+
 // testYtDlpSimple проводит простой тест yt-dlp с минимальными параметрами
 func testYtDlpSimple(url, outputDir string) error {
 	// Простейшая команда для тестирования
@@ -1068,19 +1102,19 @@ func testYtDlpSimple(url, outputDir string) error {
 		"--verbose",
 		url,
 	}
-
+	
 	cmd := exec.Command("yt-dlp", args...)
 	cmd.Dir = outputDir
-
+	
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-
+	
 	err := cmd.Run()
 	fmt.Printf("Test yt-dlp command: %s\n", strings.Join(append([]string{"yt-dlp"}, args...), " "))
 	fmt.Printf("Test stdout: %s\n", stdout.String())
 	fmt.Printf("Test stderr: %s\n", stderr.String())
-
+	
 	return err
 }
 
