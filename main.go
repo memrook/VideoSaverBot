@@ -22,7 +22,7 @@ var (
 	twitterRegex   = regexp.MustCompile(`^https://(?:x|twitter)\.com(?:/(?:i/web|[^/]+)/status/(\d+)(?:.*)?)?$`)
 	tiktokRegex    = regexp.MustCompile(`^https?://(?:www\.|m\.|vm\.|vt\.)?tiktok\.com/(?:@[^/]+/(?:video|photo)/\d+|v/\d+|t/[\w]+|[\w]+)/?`)
 	facebookRegex  = regexp.MustCompile(`^https?://(?:www\.|web\.|m\.)?facebook\.com/(?:watch\?v=[0-9]+|watch/\?v=[0-9]+|reel/[0-9]+|[a-zA-Z0-9.\-_]+/(?:videos|posts)/[0-9]+|[0-9]+/(?:videos|posts)/[0-9]+|share/(?:v|r)/[a-zA-Z0-9]+)(?:[^/?#&]+.*)?$|^https://fb\.watch/[a-zA-Z0-9]+$`)
-	youtubeRegex   = regexp.MustCompile(`^https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})(?:\S+)?$`)
+	youtubeRegex   = regexp.MustCompile(`^https?://(?:www\.)?youtube\.com/shorts/([a-zA-Z0-9_-]{11})(?:\S+)?$`)
 
 	// User Agent для запросов (синхронизирован с snapsave-media-downloader)
 	userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
@@ -248,19 +248,19 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 			// В групповых чатах отправляем краткое приветствие
 			if isGroup {
 				msg := tgbotapi.NewMessage(chatID,
-					"Привет! Я готов скачивать видео из Instagram, Twitter, TikTok, Facebook и YouTube. Просто отправь мне ссылку.")
+					"Привет! Я готов скачивать видео из Instagram, Twitter, TikTok, Facebook и YouTube Shorts. Просто отправь мне ссылку.")
 				bot.Send(msg)
 			} else {
 				// В личных чатах отправляем полное приветствие
 				msg := tgbotapi.NewMessage(chatID,
-					"Привет! Я бот для скачивания видео из Instagram, Twitter (X), TikTok, Facebook и YouTube. "+
+					"Привет! Я бот для скачивания видео из Instagram, Twitter (X), TikTok, Facebook и YouTube Shorts. "+
 						"Просто отправь мне ссылку на пост, и я сохраню для тебя видео.\n\n")
 				bot.Send(msg)
 			}
 			return
 		case "help":
 			helpText := "🔍 *Как использовать*:\n\n" +
-				"1. Найдите видео в Instagram, Twitter (X), TikTok, Facebook или YouTube\n" +
+				"1. Найдите видео в Instagram, Twitter (X), TikTok, Facebook или YouTube Shorts\n" +
 				"2. Скопируйте ссылку на пост/видео\n" +
 				"3. Отправьте мне эту ссылку\n" +
 				"4. Дождитесь загрузки и получите видео\n\n" +
@@ -269,7 +269,8 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 				"• Twitter/X\n" +
 				"• TikTok\n" +
 				"• Facebook\n" +
-				"• YouTube (видео до 50 МБ)\n\n" +
+				"• YouTube Shorts (только короткие видео)\n\n" +
+				"*YouTube*: Поддерживаю только Shorts (youtube.com/shorts/). Для длинных видео используйте сторонние сайты.\n\n" +
 				"*В групповых чатах*: Я обрабатываю только ссылки на видео или сообщения, в которых меня упоминают (@" + bot.Self.UserName + ")"
 
 			msg := tgbotapi.NewMessage(chatID, helpText)
@@ -411,9 +412,23 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 	} else if !isGroup {
 		// Если сообщение не содержит ссылку на поддерживаемые платформы и это личный чат
 		// В групповых чатах не отвечаем на сообщения без ссылок
-		msg := tgbotapi.NewMessage(chatID,
-			"Пожалуйста, отправьте ссылку на пост из Instagram, Twitter, TikTok, Facebook или YouTube, содержащий видео.")
-		bot.Send(msg)
+		
+		// Проверяем, не является ли это обычной YouTube ссылкой
+		normalYouTubeRegex := regexp.MustCompile(`^https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})`)
+		if normalYouTubeRegex.MatchString(messageText) {
+			msg := tgbotapi.NewMessage(chatID,
+				"Я поддерживаю только YouTube Shorts (короткие видео).\n\n"+
+					"Ссылки должны быть вида: youtube.com/shorts/VIDEO_ID\n\n"+
+					"Для скачивания обычных YouTube видео используйте сторонние сайты, например:\n"+
+					"• savefrom.net\n"+
+					"• y2mate.com\n"+
+					"• 9xbuddy.com")
+			bot.Send(msg)
+		} else {
+			msg := tgbotapi.NewMessage(chatID,
+				"Пожалуйста, отправьте ссылку на пост из Instagram, Twitter, TikTok, Facebook или YouTube Shorts, содержащий видео.")
+			bot.Send(msg)
+		}
 	}
 }
 

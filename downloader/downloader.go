@@ -819,7 +819,7 @@ func DownloadFacebookVideo(url string, userID int64) (string, error) {
 	return snapsaveDownload(url, userID)
 }
 
-// DownloadYouTubeVideo скачивает видео из YouTube по ссылке используя yt-dlp
+// DownloadYouTubeVideo скачивает YouTube Shorts используя yt-dlp
 func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 	// Создаем уникальную директорию для пользователя
 	outputPath, err := createUserDirectory(userID, "youtube")
@@ -832,19 +832,8 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 		return "", fmt.Errorf("yt-dlp недоступен: %v", err)
 	}
 
-	// Проверяем доступные форматы и их размеры
-	bestFormat, err := findBestFormat(url)
-	if err != nil {
-		return "", fmt.Errorf("не удалось получить информацию о видео: %v", err)
-	}
-	
-	if bestFormat == "" {
-		return "", fmt.Errorf("видео слишком большое для отправки через Telegram. Все доступные версии превышают 50 МБ. Попробуйте более короткое видео")
-	}
-
-	// Настраиваем параметры yt-dlp с найденным форматом
+	// Простые параметры для YouTube Shorts (они по умолчанию короткие)
 	args := []string{
-		"--format", bestFormat,
 		"--max-filesize", "50M",
 		"--no-playlist",
 		"--merge-output-format", "mp4",
@@ -1074,56 +1063,56 @@ func findBestFormat(url string) (string, error) {
 		"--no-playlist",
 		url,
 	}
-	
+
 	cmd := exec.Command("yt-dlp", args...)
-	
+
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	
+
 	err := cmd.Run()
 	if err != nil {
 		return "", fmt.Errorf("не удалось получить информацию о видео: %v", err)
 	}
-	
+
 	// Парсим JSON ответ
 	var videoInfo struct {
 		Formats []struct {
-			FormatID   string  `json:"format_id"`
-			FileSize   *int64  `json:"filesize"`
+			FormatID       string `json:"format_id"`
+			FileSize       *int64 `json:"filesize"`
 			FileSizeApprox *int64 `json:"filesize_approx"`
-			Height     *int    `json:"height"`
-			Width      *int    `json:"width"`
-			Ext        string  `json:"ext"`
-			VCodec     string  `json:"vcodec"`
-			ACodec     string  `json:"acodec"`
-			Format     string  `json:"format"`
+			Height         *int   `json:"height"`
+			Width          *int   `json:"width"`
+			Ext            string `json:"ext"`
+			VCodec         string `json:"vcodec"`
+			ACodec         string `json:"acodec"`
+			Format         string `json:"format"`
 		} `json:"formats"`
-		Title    string `json:"title"`
+		Title    string   `json:"title"`
 		Duration *float64 `json:"duration"`
 	}
-	
+
 	if err := json.Unmarshal([]byte(stdout.String()), &videoInfo); err != nil {
 		return "", fmt.Errorf("ошибка парсинга информации о видео: %v", err)
 	}
-	
+
 	fmt.Printf("Анализ видео: %s\n", videoInfo.Title)
 	if videoInfo.Duration != nil {
 		fmt.Printf("Длительность: %.1f минут\n", *videoInfo.Duration/60)
 	}
-	
+
 	const maxSize = 50 * 1024 * 1024 // 50MB
 	var bestFormat string
 	var bestSize int64 = maxSize + 1
 	var bestHeight int = 0
-	
+
 	// Ищем лучший формат, который поместится в лимит
 	for _, format := range videoInfo.Formats {
 		// Пропускаем аудио-форматы и форматы без видео
 		if format.VCodec == "none" || format.VCodec == "" {
 			continue
 		}
-		
+
 		// Определяем размер файла
 		var fileSize int64
 		if format.FileSize != nil {
@@ -1134,7 +1123,7 @@ func findBestFormat(url string) (string, error) {
 			// Если размер неизвестен, пропускаем
 			continue
 		}
-		
+
 		// Проверяем, помещается ли в лимит
 		if fileSize <= maxSize {
 			// Выбираем формат с лучшим качеством среди подходящих
@@ -1142,26 +1131,26 @@ func findBestFormat(url string) (string, error) {
 			if format.Height != nil {
 				height = *format.Height
 			}
-			
+
 			if height > bestHeight || (height == bestHeight && fileSize < bestSize) {
 				bestFormat = format.FormatID
 				bestSize = fileSize
 				bestHeight = height
-				fmt.Printf("Найден подходящий формат: %s (%s, %dx%d, %.1f MB)\n", 
+				fmt.Printf("Найден подходящий формат: %s (%s, %dx%d, %.1f MB)\n",
 					format.FormatID, format.Format, format.Width, height, float64(fileSize)/(1024*1024))
 			}
 		} else {
-			fmt.Printf("Формат %s слишком большой: %.1f MB\n", 
+			fmt.Printf("Формат %s слишком большой: %.1f MB\n",
 				format.FormatID, float64(fileSize)/(1024*1024))
 		}
 	}
-	
+
 	if bestFormat == "" {
 		fmt.Printf("Не найдено подходящих форматов (все превышают 50MB)\n")
 	} else {
 		fmt.Printf("Выбран лучший формат: %s (%.1f MB)\n", bestFormat, float64(bestSize)/(1024*1024))
 	}
-	
+
 	return bestFormat, nil
 }
 
