@@ -6,6 +6,7 @@ import (
 	"goland/VideoSaverBot/downloader"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -21,6 +22,7 @@ var (
 	twitterRegex   = regexp.MustCompile(`^https://(?:x|twitter)\.com(?:/(?:i/web|[^/]+)/status/(\d+)(?:.*)?)?$`)
 	tiktokRegex    = regexp.MustCompile(`^https?://(?:www\.|m\.|vm\.|vt\.)?tiktok\.com/(?:@[^/]+/(?:video|photo)/\d+|v/\d+|t/[\w]+|[\w]+)/?`)
 	facebookRegex  = regexp.MustCompile(`^https?://(?:www\.|web\.|m\.)?facebook\.com/(?:watch\?v=[0-9]+|watch/\?v=[0-9]+|reel/[0-9]+|[a-zA-Z0-9.\-_]+/(?:videos|posts)/[0-9]+|[0-9]+/(?:videos|posts)/[0-9]+|share/(?:v|r)/[a-zA-Z0-9]+)(?:[^/?#&]+.*)?$|^https://fb\.watch/[a-zA-Z0-9]+$`)
+	youtubeRegex   = regexp.MustCompile(`^https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})(?:\S+)?$`)
 
 	// User Agent для запросов (синхронизирован с snapsave-media-downloader)
 	userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
@@ -35,6 +37,13 @@ func main() {
 	debugModeFlag := flag.Bool("debug", false, "Режим отладки (true/false)")
 	maxConcurrentDownloads := flag.Int("concurrent", 5, "Максимальное количество одновременных скачиваний")
 	flag.Parse()
+
+	// Проверка доступности yt-dlp при запуске
+	if err := checkYtDlpAvailability(); err != nil {
+		log.Printf("Предупреждение: yt-dlp недоступен, YouTube функционал будет отключен: %v", err)
+	} else {
+		log.Println("yt-dlp обнаружен, YouTube функционал включен")
+	}
 
 	// Инициализация семафора для ограничения количества одновременных скачиваний
 	downloadSemaphore = make(chan struct{}, *maxConcurrentDownloads)
@@ -186,6 +195,12 @@ func extractLink(text string) string {
 		return facebookMatches[0]
 	}
 
+	// Ищем YouTube ссылку
+	youtubeMatches := youtubeRegex.FindStringSubmatch(text)
+	if len(youtubeMatches) > 0 {
+		return youtubeMatches[0]
+	}
+
 	return text // Возвращаем исходный текст, если ссылка не найдена
 }
 
@@ -220,7 +235,8 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 			!isJustLink(message.Text, instagramRegex) &&
 			!isJustLink(message.Text, twitterRegex) &&
 			!isJustLink(message.Text, tiktokRegex) &&
-			!isJustLink(message.Text, facebookRegex) {
+			!isJustLink(message.Text, facebookRegex) &&
+			!isJustLink(message.Text, youtubeRegex) {
 			return // Игнорируем сообщения в группах, если они не адресованы боту и не являются чистыми ссылками
 		}
 	}
@@ -232,28 +248,28 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 			// В групповых чатах отправляем краткое приветствие
 			if isGroup {
 				msg := tgbotapi.NewMessage(chatID,
-					"Привет! Я готов скачивать видео из Instagram, Twitter, TikTok и Facebook. Просто отправь мне ссылку.")
+					"Привет! Я готов скачивать видео из Instagram, Twitter, TikTok, Facebook и YouTube. Просто отправь мне ссылку.")
 				bot.Send(msg)
 			} else {
 				// В личных чатах отправляем полное приветствие
 				msg := tgbotapi.NewMessage(chatID,
-					"Привет! Я бот для скачивания видео из Instagram, Twitter (X), TikTok и Facebook. "+
-						"Просто отправь мне ссылку на пост, и я сохраню для тебя видео.\n\n"+
-						"🆕 Теперь поддерживаю больше платформ благодаря интеграции с snapsave.app!")
+					"Привет! Я бот для скачивания видео из Instagram, Twitter (X), TikTok, Facebook и YouTube. "+
+						"Просто отправь мне ссылку на пост, и я сохраню для тебя видео.\n\n")
 				bot.Send(msg)
 			}
 			return
 		case "help":
 			helpText := "🔍 *Как использовать*:\n\n" +
-				"1. Найдите видео в Instagram, Twitter (X), TikTok или Facebook\n" +
-				"2. Скопируйте ссылку на пост\n" +
+				"1. Найдите видео в Instagram, Twitter (X), TikTok, Facebook или YouTube\n" +
+				"2. Скопируйте ссылку на пост/видео\n" +
 				"3. Отправьте мне эту ссылку\n" +
 				"4. Дождитесь загрузки и получите видео\n\n" +
 				"*Поддерживаемые платформы*:\n" +
 				"• Instagram (посты и reels)\n" +
 				"• Twitter/X\n" +
 				"• TikTok\n" +
-				"• Facebook\n\n" +
+				"• Facebook\n" +
+				"• YouTube (видео до 50 МБ)\n\n" +
 				"*В групповых чатах*: Я обрабатываю только ссылки на видео или сообщения, в которых меня упоминают (@" + bot.Self.UserName + ")"
 
 			msg := tgbotapi.NewMessage(chatID, helpText)
@@ -367,11 +383,36 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 		// Запускаем очистку старых файлов для этого пользователя
 		go cleanupOldFiles(userID)
 
+	} else if youtubeRegex.MatchString(messageText) {
+		// Отправка сообщения о получении ссылки
+		processingMsg, _ := bot.Send(
+			tgbotapi.NewMessage(chatID, "Обрабатываю YouTube ссылку..."))
+
+		// Получаем семафор (блокирует, если достигнут лимит одновременных скачиваний)
+		acquireSemaphore()
+		defer releaseSemaphore()
+
+		// Скачивание видео
+		videoPath, err := downloader.DownloadYouTubeVideo(messageText, userID)
+		if err != nil {
+			errorMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Ошибка при скачивании видео: %v", err))
+			bot.Send(errorMsg)
+			// Удаляем сообщение об ошибке через 10 секунд
+			go deleteMessageAfterDelay(bot, chatID, processingMsg.MessageID, 10)
+			return
+		}
+
+		// Отправка видео и удаление сообщения о загрузке
+		sendVideo(bot, chatID, videoPath, userID, processingMsg.MessageID)
+
+		// Запускаем очистку старых файлов для этого пользователя
+		go cleanupOldFiles(userID)
+
 	} else if !isGroup {
 		// Если сообщение не содержит ссылку на поддерживаемые платформы и это личный чат
 		// В групповых чатах не отвечаем на сообщения без ссылок
 		msg := tgbotapi.NewMessage(chatID,
-			"Пожалуйста, отправьте ссылку на пост из Instagram, Twitter, TikTok или Facebook, содержащий видео.")
+			"Пожалуйста, отправьте ссылку на пост из Instagram, Twitter, TikTok, Facebook или YouTube, содержащий видео.")
 		bot.Send(msg)
 	}
 }
@@ -552,4 +593,13 @@ func cleanupAllTempFiles() {
 	}
 
 	log.Println("Очистка временных файлов завершена")
+}
+
+// checkYtDlpAvailability проверяет доступность yt-dlp
+func checkYtDlpAvailability() error {
+	cmd := exec.Command("yt-dlp", "--version")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("yt-dlp не установлен или недоступен: %v", err)
+	}
+	return nil
 }

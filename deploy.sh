@@ -64,6 +64,40 @@ if ! command -v go >/dev/null 2>&1; then
     fi
 fi
 
+# Установка yt-dlp для скачивания YouTube видео
+print_message "Проверка и установка yt-dlp..."
+if ! command -v yt-dlp >/dev/null 2>&1; then
+    print_warning "yt-dlp не установлен. Устанавливаем..."
+    # Установка pip если его нет
+    if ! command -v pip3 >/dev/null 2>&1; then
+        apt-get install -y python3-pip
+    fi
+    
+    # Установка yt-dlp через pip
+    pip3 install yt-dlp
+    
+    # Проверяем установку
+    if command -v yt-dlp >/dev/null 2>&1; then
+        YT_DLP_VERSION=$(yt-dlp --version)
+        print_message "yt-dlp установлен, версия: $YT_DLP_VERSION"
+    else
+        print_error "Не удалось установить yt-dlp"
+        exit 1
+    fi
+else
+    YT_DLP_VERSION=$(yt-dlp --version)
+    print_message "yt-dlp уже установлен, версия: $YT_DLP_VERSION"
+fi
+
+# Установка ffmpeg для обработки видео (если нужно)
+print_message "Проверка и установка ffmpeg..."
+if ! command -v ffmpeg >/dev/null 2>&1; then
+    print_warning "ffmpeg не установлен. Устанавливаем..."
+    apt-get install -y ffmpeg
+else
+    print_message "ffmpeg уже установлен"
+fi
+
 # Проверка версии Go
 GO_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
 print_message "Установлена версия Go: $GO_VERSION"

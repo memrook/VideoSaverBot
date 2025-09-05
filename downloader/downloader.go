@@ -10,6 +10,7 @@ import (
 	"net/http"
 	neturl "net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -792,6 +793,113 @@ func DownloadTikTokVideo(url string, userID int64) (string, error) {
 // DownloadFacebookVideo скачивает видео из Facebook по ссылке на пост
 func DownloadFacebookVideo(url string, userID int64) (string, error) {
 	return snapsaveDownload(url, userID)
+}
+
+// DownloadYouTubeVideo скачивает видео из YouTube по ссылке используя yt-dlp
+func DownloadYouTubeVideo(url string, userID int64) (string, error) {
+	// Создаем уникальную директорию для пользователя
+	outputPath, err := createUserDirectory(userID, "youtube")
+	if err != nil {
+		return "", fmt.Errorf("ошибка создания директории: %v", err)
+	}
+
+	// Проверяем наличие yt-dlp
+	if err := checkYtDlpAvailability(); err != nil {
+		return "", fmt.Errorf("yt-dlp недоступен: %v", err)
+	}
+
+	// Настраиваем параметры yt-dlp для ограничения размера и качества
+	args := []string{
+		"--format", "best[height<=720]/best[filesize<50M]/best",
+		"--max-filesize", "50M",
+		"--no-playlist",
+		"--extract-flat", "false",
+		"--no-warnings",
+		"--output", outputPath,
+		url,
+	}
+
+	// Выполняем команду yt-dlp с таймаутом
+	cmd := exec.Command("yt-dlp", args...)
+	cmd.Dir = filepath.Dir(outputPath)
+
+	// Устанавливаем таймаут для команды
+	timeout := 5 * time.Minute
+	done := make(chan error, 1)
+
+	go func() {
+		done <- cmd.Run()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			return "", fmt.Errorf("ошибка выполнения yt-dlp: %v", err)
+		}
+	case <-time.After(timeout):
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+		return "", fmt.Errorf("превышен таймаут скачивания (5 минут)")
+	}
+
+	// Проверяем, что файл был создан
+	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
+		// Ищем файл с другим расширением, так как yt-dlp может изменить формат
+		dir := filepath.Dir(outputPath)
+		files, err := os.ReadDir(dir)
+		if err != nil {
+			return "", fmt.Errorf("файл не был создан и не удалось прочитать директорию: %v", err)
+		}
+
+		baseName := strings.TrimSuffix(filepath.Base(outputPath), ".mp4")
+		for _, file := range files {
+			if strings.HasPrefix(file.Name(), baseName) && !file.IsDir() {
+				// Нашли файл с нашим базовым именем
+				actualPath := filepath.Join(dir, file.Name())
+
+				// Если это не mp4, переименовываем в mp4 для совместимости с Telegram
+				if !strings.HasSuffix(file.Name(), ".mp4") {
+					newPath := strings.TrimSuffix(actualPath, filepath.Ext(actualPath)) + ".mp4"
+					if err := os.Rename(actualPath, newPath); err == nil {
+						return newPath, nil
+					}
+				}
+				return actualPath, nil
+			}
+		}
+		return "", fmt.Errorf("файл не был создан после выполнения yt-dlp")
+	}
+
+	// Проверяем размер файла
+	fileInfo, err := os.Stat(outputPath)
+	if err != nil {
+		return "", fmt.Errorf("ошибка получения информации о файле: %v", err)
+	}
+
+	// Проверяем, что файл не слишком большой для Telegram (50MB лимит)
+	const maxFileSize = 50 * 1024 * 1024 // 50MB
+	if fileInfo.Size() > maxFileSize {
+		os.Remove(outputPath) // Удаляем слишком большой файл
+		return "", fmt.Errorf("файл слишком большой для отправки через Telegram (%.1f MB > 50 MB)", float64(fileInfo.Size())/(1024*1024))
+	}
+
+	// Проверяем, что файл не пустой
+	if fileInfo.Size() < 1024 { // Минимум 1KB
+		os.Remove(outputPath)
+		return "", fmt.Errorf("скачанный файл слишком маленький (возможно, ошибка скачивания)")
+	}
+
+	return outputPath, nil
+}
+
+// checkYtDlpAvailability проверяет доступность yt-dlp
+func checkYtDlpAvailability() error {
+	cmd := exec.Command("yt-dlp", "--version")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("yt-dlp не установлен или недоступен: %v", err)
+	}
+	return nil
 }
 
 // fallbackInstagramDownload резервный метод для Instagram
