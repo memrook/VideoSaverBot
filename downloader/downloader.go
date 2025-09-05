@@ -751,6 +751,18 @@ func createUserDirectory(userID int64, platform string) (string, error) {
 		return "", fmt.Errorf("не удалось создать директорию пользователя для временных файлов: %v", err)
 	}
 
+	// Создаем директории для кэша yt-dlp
+	cacheDir := filepath.Join(tempDirBase, ".cache")
+	configDir := filepath.Join(tempDirBase, ".config")
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		// Не критично, если не удалось создать кэш директорию
+		fmt.Printf("Предупреждение: не удалось создать cache директорию: %v\n", err)
+	}
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		// Не критично, если не удалось создать config директорию
+		fmt.Printf("Предупреждение: не удалось создать config директорию: %v\n", err)
+	}
+
 	// Генерация гарантированно уникального имени файла
 	uniqueID := generateUniqueID()
 	timestamp := time.Now().UnixNano()
@@ -821,6 +833,7 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 		"--max-filesize", "50M",
 		"--no-playlist",
 		"--merge-output-format", "mp4",
+		"--no-cache-dir", // Отключаем кэширование для избежания проблем с правами
 		"--output", outputPath,
 		"--verbose", // Добавляем подробный вывод для диагностики
 		url,
@@ -829,6 +842,13 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 	// Выполняем команду yt-dlp с таймаутом
 	cmd := exec.Command("yt-dlp", args...)
 	cmd.Dir = filepath.Dir(outputPath)
+
+	// Настраиваем переменные окружения для yt-dlp
+	cmd.Env = append(os.Environ(),
+		"XDG_CACHE_HOME="+filepath.Join("temp_videos", ".cache"),
+		"XDG_CONFIG_HOME="+filepath.Join("temp_videos", ".config"),
+		"HOME="+filepath.Dir(outputPath), // Устанавливаем HOME в рабочую директорию
+	)
 
 	// Захватываем stdout и stderr для диагностики
 	var stdout, stderr strings.Builder
@@ -848,12 +868,12 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 		// Всегда логируем вывод yt-dlp для диагностики
 		stdoutStr := stdout.String()
 		stderrStr := stderr.String()
-		
+
 		if err != nil {
 			// Логируем детальную информацию об ошибке
-			errorDetails := fmt.Sprintf("yt-dlp failed with exit code: %v\nStdout: %s\nStderr: %s\nCommand: %s", 
+			errorDetails := fmt.Sprintf("yt-dlp failed with exit code: %v\nStdout: %s\nStderr: %s\nCommand: %s",
 				err, stdoutStr, stderrStr, strings.Join(append([]string{"yt-dlp"}, args...), " "))
-			
+
 			// Анализируем типичные ошибки
 			if strings.Contains(stderrStr, "Video unavailable") {
 				return "", fmt.Errorf("видео недоступно (возможно, удалено или приватное)")
@@ -870,10 +890,10 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 			if strings.Contains(stderrStr, "Requested format is not available") {
 				return "", fmt.Errorf("запрашиваемый формат недоступен")
 			}
-			
+
 			return "", fmt.Errorf("ошибка выполнения yt-dlp: %v\nДетали: %s", err, errorDetails)
 		}
-		
+
 		// Команда завершилась успешно, но проверим что было в выводе
 		if strings.Contains(stderrStr, "File is larger than max-filesize") {
 			return "", fmt.Errorf("файл превышает ограничение размера (50MB)")
@@ -881,11 +901,11 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 		if strings.Contains(stdoutStr, "has already been downloaded") || strings.Contains(stderrStr, "has already been downloaded") {
 			// Возможно файл уже существует, но мы его не нашли
 		}
-		
+
 		// Логируем успешный вывод для отладки
-		fmt.Printf("yt-dlp успешно завершен.\nStdout: %s\nStderr: %s\nCommand: %s\n", 
+		fmt.Printf("yt-dlp успешно завершен.\nStdout: %s\nStderr: %s\nCommand: %s\n",
 			stdoutStr, stderrStr, strings.Join(append([]string{"yt-dlp"}, args...), " "))
-			
+
 	case <-time.After(timeout):
 		if cmd.Process != nil {
 			cmd.Process.Kill()
@@ -990,7 +1010,7 @@ func checkYtDlpAvailability() error {
 	if err != nil {
 		return fmt.Errorf("yt-dlp не установлен или недоступен: %v", err)
 	}
-	
+
 	// Логируем версию для диагностики
 	fmt.Printf("yt-dlp version: %s\n", strings.TrimSpace(string(output)))
 	return nil
@@ -1007,19 +1027,19 @@ func testYtDlpSimple(url, outputDir string) error {
 		"--verbose",
 		url,
 	}
-	
+
 	cmd := exec.Command("yt-dlp", args...)
 	cmd.Dir = outputDir
-	
+
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	
+
 	err := cmd.Run()
 	fmt.Printf("Test yt-dlp command: %s\n", strings.Join(append([]string{"yt-dlp"}, args...), " "))
 	fmt.Printf("Test stdout: %s\n", stdout.String())
 	fmt.Printf("Test stderr: %s\n", stderr.String())
-	
+
 	return err
 }
 
