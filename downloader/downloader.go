@@ -813,7 +813,6 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 		"--format", "best[height<=720][filesize<50M]/best[filesize<50M]/worst[filesize<50M]/worst",
 		"--max-filesize", "50M",
 		"--no-playlist",
-		"--extract-flat", "false",
 		"--ignore-errors",
 		"--no-warnings",
 		"--prefer-free-formats",
@@ -834,7 +833,7 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 	// Устанавливаем таймаут для команды
 	timeout := 5 * time.Minute
 	done := make(chan error, 1)
-	
+
 	go func() {
 		done <- cmd.Run()
 	}()
@@ -843,9 +842,9 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 	case err := <-done:
 		if err != nil {
 			// Логируем детальную информацию об ошибке
-			errorDetails := fmt.Sprintf("yt-dlp failed with exit code: %v\nStdout: %s\nStderr: %s\nCommand: %s", 
+			errorDetails := fmt.Sprintf("yt-dlp failed with exit code: %v\nStdout: %s\nStderr: %s\nCommand: %s",
 				err, stdout.String(), stderr.String(), strings.Join(append([]string{"yt-dlp"}, args...), " "))
-			
+
 			// Анализируем типичные ошибки
 			stderrStr := stderr.String()
 			if strings.Contains(stderrStr, "Video unavailable") {
@@ -863,7 +862,7 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 			if strings.Contains(stderrStr, "Requested format is not available") {
 				return "", fmt.Errorf("запрашиваемый формат недоступен")
 			}
-			
+
 			return "", fmt.Errorf("ошибка выполнения yt-dlp: %v\nДетали: %s", err, errorDetails)
 		}
 	case <-time.After(timeout):
