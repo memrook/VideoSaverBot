@@ -735,7 +735,13 @@ func findVideoURLWithRegex(htmlContent string) (string, error) {
 
 // createUserDirectory создает уникальную директорию для пользователя
 func createUserDirectory(userID int64, platform string) (string, error) {
-	tempDirBase := "temp_videos"
+	// Получаем абсолютный путь к рабочей директории
+	workDir, err := os.Getwd()
+	if err != nil {
+		workDir = "."
+	}
+	
+	tempDirBase := filepath.Join(workDir, "temp_videos")
 
 	// Используем мьютекс для синхронизации создания директорий
 	tempDirMutex.Lock()
@@ -766,13 +772,13 @@ func createUserDirectory(userID int64, platform string) (string, error) {
 	// Генерация гарантированно уникального имени файла
 	uniqueID := generateUniqueID()
 	timestamp := time.Now().UnixNano()
-
-	// Для yt-dlp используем шаблон без расширения, пусть сам определит
+	
+	// Для yt-dlp используем абсолютный путь и шаблон без расширения
 	if platform == "youtube" {
 		outputPath := filepath.Join(userDir, fmt.Sprintf("%s_%d_%s_%d.%%(ext)s", platform, userID, uniqueID, timestamp))
 		return outputPath, nil
 	}
-
+	
 	outputPath := filepath.Join(userDir, fmt.Sprintf("%s_%d_%s_%d.mp4", platform, userID, uniqueID, timestamp))
 	return outputPath, nil
 }
@@ -841,13 +847,19 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 
 	// Выполняем команду yt-dlp с таймаутом
 	cmd := exec.Command("yt-dlp", args...)
-	cmd.Dir = filepath.Dir(outputPath)
+	
+	// Получаем абсолютный путь к рабочей директории
+	workDir, err := os.Getwd()
+	if err != nil {
+		workDir = "."
+	}
+	cmd.Dir = workDir // Устанавливаем рабочую директорию в корень проекта
 
 	// Настраиваем переменные окружения для yt-dlp
 	cmd.Env = append(os.Environ(),
-		"XDG_CACHE_HOME="+filepath.Join("temp_videos", ".cache"),
-		"XDG_CONFIG_HOME="+filepath.Join("temp_videos", ".config"),
-		"HOME="+filepath.Dir(outputPath), // Устанавливаем HOME в рабочую директорию
+		"XDG_CACHE_HOME="+filepath.Join(workDir, "temp_videos", ".cache"),
+		"XDG_CONFIG_HOME="+filepath.Join(workDir, "temp_videos", ".config"),
+		"HOME="+workDir, // Устанавливаем HOME в рабочую директорию проекта
 	)
 
 	// Захватываем stdout и stderr для диагностики
@@ -948,30 +960,42 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 			}
 		}
 
+		// Очищаем .part файлы (незавершенные загрузки)
+		for _, file := range files {
+			if !file.IsDir() && strings.HasSuffix(file.Name(), ".part") {
+				partFilePath := filepath.Join(dir, file.Name())
+				os.Remove(partFilePath) // Удаляем .part файлы
+				fmt.Printf("Удален незавершенный файл: %s\n", partFilePath)
+			}
+		}
+
 		// Если не нашли по базовому имени, ищем любые видео файлы, созданные недавно
 		now := time.Now()
 		for _, file := range files {
 			if file.IsDir() {
 				continue
 			}
-
-			// Проверяем видео расширения
+			
+			// Проверяем видео расширения (исключая .part файлы)
 			fileName := file.Name()
-			if strings.HasSuffix(fileName, ".mp4") || strings.HasSuffix(fileName, ".webm") ||
-				strings.HasSuffix(fileName, ".mkv") || strings.HasSuffix(fileName, ".avi") {
-
+			if !strings.HasSuffix(fileName, ".part") && 
+			   (strings.HasSuffix(fileName, ".mp4") || strings.HasSuffix(fileName, ".webm") || 
+			    strings.HasSuffix(fileName, ".mkv") || strings.HasSuffix(fileName, ".avi")) {
+				
 				filePath := filepath.Join(dir, fileName)
 				fileInfo, err := os.Stat(filePath)
 				if err != nil {
 					continue
 				}
-
+				
 				// Если файл создан в последние 5 минут, считаем его нашим
 				if now.Sub(fileInfo.ModTime()) < 5*time.Minute {
 					// Переименовываем в ожидаемый формат
-					newPath := strings.TrimSuffix(outputPath, ".mp4") + ".mp4"
-					if err := os.Rename(filePath, newPath); err == nil {
-						return newPath, nil
+					newPath := strings.TrimSuffix(outputPath, ".%(ext)s") + ".mp4"
+					if strings.Contains(outputPath, ".%(ext)s") {
+						if err := os.Rename(filePath, newPath); err == nil {
+							return newPath, nil
+						}
 					}
 					return filePath, nil
 				}
