@@ -412,7 +412,7 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 	} else if !isGroup {
 		// Если сообщение не содержит ссылку на поддерживаемые платформы и это личный чат
 		// В групповых чатах не отвечаем на сообщения без ссылок
-		
+
 		// Проверяем, не является ли это обычной YouTube ссылкой
 		normalYouTubeRegex := regexp.MustCompile(`^https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})`)
 		if normalYouTubeRegex.MatchString(messageText) {
