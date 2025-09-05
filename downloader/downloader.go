@@ -740,7 +740,7 @@ func createUserDirectory(userID int64, platform string) (string, error) {
 	if err != nil {
 		workDir = "."
 	}
-	
+
 	tempDirBase := filepath.Join(workDir, "temp_videos")
 
 	// Используем мьютекс для синхронизации создания директорий
@@ -772,13 +772,13 @@ func createUserDirectory(userID int64, platform string) (string, error) {
 	// Генерация гарантированно уникального имени файла
 	uniqueID := generateUniqueID()
 	timestamp := time.Now().UnixNano()
-	
+
 	// Для yt-dlp используем абсолютный путь и шаблон без расширения
 	if platform == "youtube" {
 		outputPath := filepath.Join(userDir, fmt.Sprintf("%s_%d_%s_%d.%%(ext)s", platform, userID, uniqueID, timestamp))
 		return outputPath, nil
 	}
-	
+
 	outputPath := filepath.Join(userDir, fmt.Sprintf("%s_%d_%s_%d.mp4", platform, userID, uniqueID, timestamp))
 	return outputPath, nil
 }
@@ -833,13 +833,14 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 	}
 
 	// Настраиваем параметры yt-dlp для ограничения размера и качества
-	// Используем более простой и надежный селектор формата
+	// Используем более строгий контроль размера файла
 	args := []string{
-		"--format", "best[filesize<50M]/best[height<=720]/worst",
+		"--format", "worst[height<=720][filesize<50M]/worst[height<=480][filesize<40M]/worst[filesize<30M]/worst",
 		"--max-filesize", "50M",
 		"--no-playlist",
 		"--merge-output-format", "mp4",
 		"--no-cache-dir", // Отключаем кэширование для избежания проблем с правами
+		"--abort-on-error", // Прерывать при ошибках
 		"--output", outputPath,
 		"--verbose", // Добавляем подробный вывод для диагностики
 		url,
@@ -847,7 +848,7 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 
 	// Выполняем команду yt-dlp с таймаутом
 	cmd := exec.Command("yt-dlp", args...)
-	
+
 	// Получаем абсолютный путь к рабочей директории
 	workDir, err := os.Getwd()
 	if err != nil {
@@ -910,12 +911,20 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 		if strings.Contains(stderrStr, "File is larger than max-filesize") {
 			return "", fmt.Errorf("файл превышает ограничение размера (50MB)")
 		}
+		if strings.Contains(stderrStr, "Requested format is not available") {
+			return "", fmt.Errorf("подходящий формат видео не найден (возможно, все версии слишком большие)")
+		}
 		if strings.Contains(stdoutStr, "has already been downloaded") || strings.Contains(stderrStr, "has already been downloaded") {
 			// Возможно файл уже существует, но мы его не нашли
 		}
-
+		
+		// Проверяем, было ли прервано скачивание из-за размера
+		if strings.Contains(stdoutStr, "aborting") || strings.Contains(stderrStr, "aborting") {
+			return "", fmt.Errorf("скачивание прервано (возможно, из-за превышения размера файла)")
+		}
+		
 		// Логируем успешный вывод для отладки
-		fmt.Printf("yt-dlp успешно завершен.\nStdout: %s\nStderr: %s\nCommand: %s\n",
+		fmt.Printf("yt-dlp успешно завершен.\nStdout: %s\nStderr: %s\nCommand: %s\n", 
 			stdoutStr, stderrStr, strings.Join(append([]string{"yt-dlp"}, args...), " "))
 
 	case <-time.After(timeout):
@@ -961,12 +970,20 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 		}
 
 		// Очищаем .part файлы (незавершенные загрузки)
+		partFilesFound := false
 		for _, file := range files {
 			if !file.IsDir() && strings.HasSuffix(file.Name(), ".part") {
 				partFilePath := filepath.Join(dir, file.Name())
-				os.Remove(partFilePath) // Удаляем .part файлы
-				fmt.Printf("Удален незавершенный файл: %s\n", partFilePath)
+				if err := os.Remove(partFilePath); err == nil {
+					fmt.Printf("Удален незавершенный файл: %s\n", partFilePath)
+					partFilesFound = true
+				}
 			}
+		}
+		
+		// Если нашли .part файлы, это означает, что скачивание было прервано
+		if partFilesFound {
+			return "", fmt.Errorf("скачивание было прервано, созданы только частичные файлы (возможно, превышен размер или таймаут)")
 		}
 
 		// Если не нашли по базовому имени, ищем любые видео файлы, созданные недавно
@@ -975,19 +992,19 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 			if file.IsDir() {
 				continue
 			}
-			
+
 			// Проверяем видео расширения (исключая .part файлы)
 			fileName := file.Name()
-			if !strings.HasSuffix(fileName, ".part") && 
-			   (strings.HasSuffix(fileName, ".mp4") || strings.HasSuffix(fileName, ".webm") || 
-			    strings.HasSuffix(fileName, ".mkv") || strings.HasSuffix(fileName, ".avi")) {
-				
+			if !strings.HasSuffix(fileName, ".part") &&
+				(strings.HasSuffix(fileName, ".mp4") || strings.HasSuffix(fileName, ".webm") ||
+					strings.HasSuffix(fileName, ".mkv") || strings.HasSuffix(fileName, ".avi")) {
+
 				filePath := filepath.Join(dir, fileName)
 				fileInfo, err := os.Stat(filePath)
 				if err != nil {
 					continue
 				}
-				
+
 				// Если файл создан в последние 5 минут, считаем его нашим
 				if now.Sub(fileInfo.ModTime()) < 5*time.Minute {
 					// Переименовываем в ожидаемый формат
