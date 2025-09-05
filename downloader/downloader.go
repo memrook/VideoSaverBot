@@ -754,8 +754,14 @@ func createUserDirectory(userID int64, platform string) (string, error) {
 	// Генерация гарантированно уникального имени файла
 	uniqueID := generateUniqueID()
 	timestamp := time.Now().UnixNano()
+	
+	// Для yt-dlp используем шаблон без расширения, пусть сам определит
+	if platform == "youtube" {
+		outputPath := filepath.Join(userDir, fmt.Sprintf("%s_%d_%s_%d.%%(ext)s", platform, userID, uniqueID, timestamp))
+		return outputPath, nil
+	}
+	
 	outputPath := filepath.Join(userDir, fmt.Sprintf("%s_%d_%s_%d.mp4", platform, userID, uniqueID, timestamp))
-
 	return outputPath, nil
 }
 
@@ -874,19 +880,28 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 
 	// Проверяем, что файл был создан
 	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
-		// Ищем файл с другим расширением, так как yt-dlp может изменить формат
+		// yt-dlp может создать файл с другим именем, ищем все файлы в директории
 		dir := filepath.Dir(outputPath)
 		files, err := os.ReadDir(dir)
 		if err != nil {
 			return "", fmt.Errorf("файл не был создан и не удалось прочитать директорию: %v", err)
 		}
 
+		// Логируем содержимое директории для отладки
+		var fileList []string
+		for _, file := range files {
+			if !file.IsDir() {
+				fileList = append(fileList, file.Name())
+			}
+		}
+
+		// Сначала ищем файлы с нашим базовым именем
 		baseName := strings.TrimSuffix(filepath.Base(outputPath), ".mp4")
 		for _, file := range files {
 			if strings.HasPrefix(file.Name(), baseName) && !file.IsDir() {
 				// Нашли файл с нашим базовым именем
 				actualPath := filepath.Join(dir, file.Name())
-
+				
 				// Если это не mp4, переименовываем в mp4 для совместимости с Telegram
 				if !strings.HasSuffix(file.Name(), ".mp4") {
 					newPath := strings.TrimSuffix(actualPath, filepath.Ext(actualPath)) + ".mp4"
@@ -897,7 +912,38 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 				return actualPath, nil
 			}
 		}
-		return "", fmt.Errorf("файл не был создан после выполнения yt-dlp")
+
+		// Если не нашли по базовому имени, ищем любые видео файлы, созданные недавно
+		now := time.Now()
+		for _, file := range files {
+			if file.IsDir() {
+				continue
+			}
+			
+			// Проверяем видео расширения
+			fileName := file.Name()
+			if strings.HasSuffix(fileName, ".mp4") || strings.HasSuffix(fileName, ".webm") || 
+			   strings.HasSuffix(fileName, ".mkv") || strings.HasSuffix(fileName, ".avi") {
+				
+				filePath := filepath.Join(dir, fileName)
+				fileInfo, err := os.Stat(filePath)
+				if err != nil {
+					continue
+				}
+				
+				// Если файл создан в последние 5 минут, считаем его нашим
+				if now.Sub(fileInfo.ModTime()) < 5*time.Minute {
+					// Переименовываем в ожидаемый формат
+					newPath := strings.TrimSuffix(outputPath, ".mp4") + ".mp4"
+					if err := os.Rename(filePath, newPath); err == nil {
+						return newPath, nil
+					}
+					return filePath, nil
+				}
+			}
+		}
+
+		return "", fmt.Errorf("файл не был создан после выполнения yt-dlp. Файлы в директории: %v", fileList)
 	}
 
 	// Проверяем размер файла
