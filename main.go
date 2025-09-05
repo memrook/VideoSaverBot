@@ -22,7 +22,7 @@ var (
 	twitterRegex   = regexp.MustCompile(`^https://(?:x|twitter)\.com(?:/(?:i/web|[^/]+)/status/(\d+)(?:.*)?)?$`)
 	tiktokRegex    = regexp.MustCompile(`^https?://(?:www\.|m\.|vm\.|vt\.)?tiktok\.com/(?:@[^/]+/(?:video|photo)/\d+|v/\d+|t/[\w]+|[\w]+)/?`)
 	facebookRegex  = regexp.MustCompile(`^https?://(?:www\.|web\.|m\.)?facebook\.com/(?:watch\?v=[0-9]+|watch/\?v=[0-9]+|reel/[0-9]+|[a-zA-Z0-9.\-_]+/(?:videos|posts)/[0-9]+|[0-9]+/(?:videos|posts)/[0-9]+|share/(?:v|r)/[a-zA-Z0-9]+)(?:[^/?#&]+.*)?$|^https://fb\.watch/[a-zA-Z0-9]+$`)
-	youtubeRegex   = regexp.MustCompile(`^https?://(?:www\.)?youtube\.com/shorts/([a-zA-Z0-9_-]{11})(?:\S+)?$`)
+	youtubeRegex   = regexp.MustCompile(`^(?:https?://)?(?:www\.)?youtube\.com/shorts/([a-zA-Z0-9_-]{11})(?:\S+)?$`)
 
 	// User Agent для запросов (синхронизирован с snapsave-media-downloader)
 	userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
@@ -198,7 +198,12 @@ func extractLink(text string) string {
 	// Ищем YouTube ссылку
 	youtubeMatches := youtubeRegex.FindStringSubmatch(text)
 	if len(youtubeMatches) > 0 {
-		return youtubeMatches[0]
+		link := youtubeMatches[0]
+		// Добавляем протокол, если его нет
+		if !strings.HasPrefix(link, "http://") && !strings.HasPrefix(link, "https://") {
+			link = "https://" + link
+		}
+		return link
 	}
 
 	return text // Возвращаем исходный текст, если ссылка не найдена
@@ -414,7 +419,7 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 		// В групповых чатах не отвечаем на сообщения без ссылок
 
 		// Проверяем, не является ли это обычной YouTube ссылкой
-		normalYouTubeRegex := regexp.MustCompile(`^https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})`)
+		normalYouTubeRegex := regexp.MustCompile(`^(?:https?://)?(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})`)
 		if normalYouTubeRegex.MatchString(messageText) {
 			msg := tgbotapi.NewMessage(chatID,
 				"Я поддерживаю только YouTube Shorts (короткие видео).\n\n"+
