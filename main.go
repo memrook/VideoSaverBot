@@ -1,16 +1,21 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"goland/VideoSaverBot/downloader"
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -26,6 +31,14 @@ var (
 	_userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
 
 	downloadSemaphore chan struct{}
+
+	activeUsers  sync.Map
+	queuedCount  int64
+	runningCount int64
+	statTotal    int64
+	statErrors   int64
+	statStart    = time.Now()
+	adminID      int64
 )
 
 func main() {
@@ -33,6 +46,8 @@ func main() {
 	debugModeFlag := flag.Bool("debug", false, "Режим отладки (true/false)")
 	maxConcurrentDownloads := flag.Int("concurrent", 5, "Максимальное количество одновременных скачиваний")
 	flag.Parse()
+
+	adminID, _ = strconv.ParseInt(os.Getenv("BOT_ADMIN_ID"), 10, 64)
 
 	if err := checkYtDlpAvailability(); err != nil {
 		log.Printf("Предупреждение: yt-dlp недоступен, YouTube функционал будет отключен: %v", err)
@@ -73,12 +88,32 @@ func main() {
 	// Запускаем мониторинг соединения с Telegram API
 	go monitorConnection(client, connectionErrors, reconnect)
 
+	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	wg := &sync.WaitGroup{}
+
 	for {
 		select {
 		case update := <-updates:
 			if update.Message != nil {
-				go handleMessage(client, update.Message)
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					handleMessage(client, update.Message)
+				}()
 			}
+		case <-shutdownCtx.Done():
+			log.Println("Получен сигнал завершения, ожидаем активные загрузки...")
+			waitCh := make(chan struct{})
+			go func() { wg.Wait(); close(waitCh) }()
+			select {
+			case <-waitCh:
+				log.Println("Все загрузки завершены")
+			case <-time.After(30 * time.Second):
+				log.Println("Таймаут 30с, принудительный выход")
+			}
+			return
 		case err := <-connectionErrors:
 			if !strings.Contains(err.Error(), "timeout") && !strings.Contains(err.Error(), "EOF") {
 				log.Printf("Ошибка соединения с Telegram API: %v", err)
@@ -108,6 +143,7 @@ func setupBotCommands(bot *tgbotapi.BotAPI) {
 	commands := []tgbotapi.BotCommand{
 		{Command: "start", Description: "Начать работу с ботом"},
 		{Command: "help", Description: "Показать инструкцию по использованию"},
+		{Command: "stats", Description: "Статистика бота (только для администратора)"},
 	}
 
 	_, err := bot.Request(tgbotapi.NewSetMyCommands(commands...))
@@ -122,14 +158,6 @@ func setupBotCommands(bot *tgbotapi.BotAPI) {
 	}
 }
 
-// acquireSemaphore блокирует семафор для ограничения количества одновременных скачиваний
-func acquireSemaphore() {
-	downloadSemaphore <- struct{}{}
-}
-
-func releaseSemaphore() {
-	<-downloadSemaphore
-}
 
 func isJustLink(text string, regex *regexp.Regexp) bool {
 	trimmedText := strings.TrimSpace(text)
@@ -241,124 +269,119 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 			msg.ParseMode = "Markdown"
 			bot.Send(msg)
 			return
+		case "stats":
+			if adminID == 0 || userID != adminID {
+				return
+			}
+			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf(
+				"Статистика:\nВсего загрузок: %d\nОшибок: %d\nВ очереди: %d\nАктивных: %d\nВремя работы: %v",
+				atomic.LoadInt64(&statTotal),
+				atomic.LoadInt64(&statErrors),
+				atomic.LoadInt64(&queuedCount),
+				atomic.LoadInt64(&runningCount),
+				time.Since(statStart).Round(time.Minute),
+			)))
+			return
 		}
 	}
 
 	messageText := extractLink(message.Text)
 
-	if instagramRegex.MatchString(messageText) {
-		processingMsg, _ := bot.Send(
-			tgbotapi.NewMessage(chatID, "Обрабатываю Instagram ссылку..."))
-
-		acquireSemaphore()
-		defer releaseSemaphore()
-
-		videoPath, err := downloader.DownloadInstagramVideo(messageText, userID)
-		if err != nil {
-			errorMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Ошибка при скачивании видео: %v", err))
-			bot.Send(errorMsg)
-			go deleteMessageAfterDelay(bot, chatID, processingMsg.MessageID, 10)
-			return
+	// Определяем платформу
+	var processingText string
+	switch {
+	case instagramRegex.MatchString(messageText):
+		processingText = "Обрабатываю Instagram ссылку..."
+	case twitterRegex.MatchString(messageText):
+		processingText = "Обрабатываю Twitter/X ссылку..."
+	case tiktokRegex.MatchString(messageText):
+		processingText = "Обрабатываю TikTok ссылку..."
+	case facebookRegex.MatchString(messageText):
+		processingText = "Обрабатываю Facebook ссылку..."
+	case youtubeRegex.MatchString(messageText):
+		processingText = "Обрабатываю YouTube ссылку..."
+	default:
+		if !isGroup {
+			normalYouTubeRegex := regexp.MustCompile(`^(?:https?://)?(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})`)
+			if normalYouTubeRegex.MatchString(messageText) {
+				msg := tgbotapi.NewMessage(chatID,
+					"Я поддерживаю только YouTube Shorts (короткие видео).\n\n"+
+						"Ссылки должны быть вида: youtube.com/shorts/VIDEO_ID\n\n"+
+						"Для скачивания обычных YouTube видео используйте сторонние сайты, например:\n"+
+						"• savefrom.net\n"+
+						"• y2mate.com\n"+
+						"• 9xbuddy.com")
+				bot.Send(msg)
+			} else {
+				msg := tgbotapi.NewMessage(chatID,
+					"Пожалуйста, отправьте ссылку на пост из Instagram, Twitter, TikTok, Facebook или YouTube Shorts, содержащий видео.")
+				bot.Send(msg)
+			}
 		}
-
-		sendVideo(bot, chatID, videoPath, userID, processingMsg.MessageID)
-
-		go cleanupOldFiles(userID)
-
-	} else if twitterRegex.MatchString(messageText) {
-		processingMsg, _ := bot.Send(
-			tgbotapi.NewMessage(chatID, "Обрабатываю Twitter/X ссылку..."))
-
-		acquireSemaphore()
-		defer releaseSemaphore()
-
-		videoPath, err := downloader.DownloadTwitterVideo(messageText, userID)
-		if err != nil {
-			errorMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Ошибка при скачивании видео: %v", err))
-			bot.Send(errorMsg)
-			go deleteMessageAfterDelay(bot, chatID, processingMsg.MessageID, 10)
-			return
-		}
-
-		sendVideo(bot, chatID, videoPath, userID, processingMsg.MessageID)
-
-		go cleanupOldFiles(userID)
-
-	} else if tiktokRegex.MatchString(messageText) {
-		processingMsg, _ := bot.Send(
-			tgbotapi.NewMessage(chatID, "Обрабатываю TikTok ссылку..."))
-
-		acquireSemaphore()
-		defer releaseSemaphore()
-
-		videoPath, err := downloader.DownloadTikTokVideo(messageText, userID)
-		if err != nil {
-			errorMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Ошибка при скачивании видео: %v", err))
-			bot.Send(errorMsg)
-			go deleteMessageAfterDelay(bot, chatID, processingMsg.MessageID, 10)
-			return
-		}
-
-		sendVideo(bot, chatID, videoPath, userID, processingMsg.MessageID)
-
-		go cleanupOldFiles(userID)
-
-	} else if facebookRegex.MatchString(messageText) {
-		processingMsg, _ := bot.Send(
-			tgbotapi.NewMessage(chatID, "Обрабатываю Facebook ссылку..."))
-
-		acquireSemaphore()
-		defer releaseSemaphore()
-
-		videoPath, err := downloader.DownloadFacebookVideo(messageText, userID)
-		if err != nil {
-			errorMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Ошибка при скачивании видео: %v", err))
-			bot.Send(errorMsg)
-			go deleteMessageAfterDelay(bot, chatID, processingMsg.MessageID, 10)
-			return
-		}
-
-		sendVideo(bot, chatID, videoPath, userID, processingMsg.MessageID)
-
-		go cleanupOldFiles(userID)
-
-	} else if youtubeRegex.MatchString(messageText) {
-		processingMsg, _ := bot.Send(
-			tgbotapi.NewMessage(chatID, "Обрабатываю YouTube ссылку..."))
-
-		acquireSemaphore()
-		defer releaseSemaphore()
-
-		videoPath, err := downloader.DownloadYouTubeVideo(messageText, userID)
-		if err != nil {
-			errorMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Ошибка при скачивании видео: %v", err))
-			bot.Send(errorMsg)
-			go deleteMessageAfterDelay(bot, chatID, processingMsg.MessageID, 10)
-			return
-		}
-
-		sendVideo(bot, chatID, videoPath, userID, processingMsg.MessageID)
-
-		go cleanupOldFiles(userID)
-
-	} else if !isGroup {
-
-		normalYouTubeRegex := regexp.MustCompile(`^(?:https?://)?(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})`)
-		if normalYouTubeRegex.MatchString(messageText) {
-			msg := tgbotapi.NewMessage(chatID,
-				"Я поддерживаю только YouTube Shorts (короткие видео).\n\n"+
-					"Ссылки должны быть вида: youtube.com/shorts/VIDEO_ID\n\n"+
-					"Для скачивания обычных YouTube видео используйте сторонние сайты, например:\n"+
-					"• savefrom.net\n"+
-					"• y2mate.com\n"+
-					"• 9xbuddy.com")
-			bot.Send(msg)
-		} else {
-			msg := tgbotapi.NewMessage(chatID,
-				"Пожалуйста, отправьте ссылку на пост из Instagram, Twitter, TikTok, Facebook или YouTube Shorts, содержащий видео.")
-			bot.Send(msg)
-		}
+		return
 	}
+
+	// Ограничение: один запрос на пользователя одновременно
+	if _, loaded := activeUsers.LoadOrStore(userID, struct{}{}); loaded {
+		bot.Send(tgbotapi.NewMessage(chatID, "Ваша загрузка ещё обрабатывается, подождите..."))
+		return
+	}
+	defer activeUsers.Delete(userID)
+
+	processingMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, processingText))
+
+	// Семафор с обратной связью о позиции в очереди
+	var queueMsg *tgbotapi.Message
+	select {
+	case downloadSemaphore <- struct{}{}:
+		// слот свободен, очередь не нужна
+	default:
+		atomic.AddInt64(&queuedCount, 1)
+		m, _ := bot.Send(tgbotapi.NewMessage(chatID,
+			fmt.Sprintf("Все слоты заняты, ожидайте... (в очереди: %d)", atomic.LoadInt64(&queuedCount))))
+		queueMsg = &m
+		downloadSemaphore <- struct{}{} // блокирующий захват
+		atomic.AddInt64(&queuedCount, -1)
+	}
+	defer func() { <-downloadSemaphore }()
+
+	if queueMsg != nil {
+		bot.Request(tgbotapi.NewDeleteMessage(chatID, queueMsg.MessageID))
+	}
+
+	atomic.AddInt64(&runningCount, 1)
+	defer atomic.AddInt64(&runningCount, -1)
+
+	dlCtx, dlCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer dlCancel()
+
+	var videoPath string
+	var err error
+	switch {
+	case instagramRegex.MatchString(messageText):
+		videoPath, err = downloader.DownloadInstagramVideo(dlCtx, messageText, userID)
+	case twitterRegex.MatchString(messageText):
+		videoPath, err = downloader.DownloadTwitterVideo(dlCtx, messageText, userID)
+	case tiktokRegex.MatchString(messageText):
+		videoPath, err = downloader.DownloadTikTokVideo(dlCtx, messageText, userID)
+	case facebookRegex.MatchString(messageText):
+		videoPath, err = downloader.DownloadFacebookVideo(dlCtx, messageText, userID)
+	case youtubeRegex.MatchString(messageText):
+		videoPath, err = downloader.DownloadYouTubeVideo(dlCtx, messageText, userID)
+	}
+
+	if err != nil {
+		log.Printf("Ошибка скачивания для пользователя %d: %v", userID, err)
+		atomic.AddInt64(&statErrors, 1)
+		errorMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Ошибка при скачивании видео: %v", err))
+		bot.Send(errorMsg)
+		go deleteMessageAfterDelay(bot, chatID, processingMsg.MessageID, 10)
+		return
+	}
+
+	atomic.AddInt64(&statTotal, 1)
+	sendVideo(bot, chatID, videoPath, userID, processingMsg.MessageID)
+	go cleanupOldFiles(userID)
 }
 
 func deleteMessageAfterDelay(bot *tgbotapi.BotAPI, chatID int64, messageID int, delaySeconds int) {

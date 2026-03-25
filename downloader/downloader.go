@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -308,7 +309,7 @@ func detectPlatform(mediaURL string) PlatformType {
 	}
 }
 
-func snapsaveDownload(mediaURL string, userID int64) (string, error) {
+func snapsaveDownload(ctx context.Context, mediaURL string, userID int64) (string, error) {
 	platform := detectPlatform(mediaURL)
 
 	outputPath, err := createUserDirectory(userID, string(platform))
@@ -316,35 +317,39 @@ func snapsaveDownload(mediaURL string, userID int64) (string, error) {
 		return "", err
 	}
 
-	videoURL, err := getSnapsaveVideoURL(mediaURL)
+	videoURL, err := getSnapsaveVideoURL(ctx, mediaURL)
 	if err != nil {
-		return fallbackDownload(mediaURL, userID, platform)
+		return fallbackDownload(ctx, mediaURL, userID, platform)
 	}
 
-	return downloadMedia(videoURL, outputPath)
+	result, err := downloadMedia(ctx, videoURL, outputPath)
+	if err != nil {
+		return fallbackDownload(ctx, mediaURL, userID, platform)
+	}
+	return result, nil
 }
 
-func getSnapsaveVideoURL(mediaURL string) (string, error) {
+func getSnapsaveVideoURL(ctx context.Context, mediaURL string) (string, error) {
 	platform := detectPlatform(mediaURL)
 
 	switch platform {
 	case TikTok:
-		return getSnapsaveVideoURLTikTok(mediaURL)
+		return getSnapsaveVideoURLTikTok(ctx, mediaURL)
 	case Twitter:
-		return getSnapsaveVideoURLTwitter(mediaURL)
+		return getSnapsaveVideoURLTwitter(ctx, mediaURL)
 	case Instagram, Facebook:
-		return getSnapsaveVideoURLInstagramFacebook(mediaURL)
+		return getSnapsaveVideoURLInstagramFacebook(ctx, mediaURL)
 	default:
 		return "", fmt.Errorf("неподдерживаемая платформа: %s", platform)
 	}
 }
 
-func getSnapsaveVideoURLTikTok(mediaURL string) (string, error) {
+func getSnapsaveVideoURLTikTok(ctx context.Context, mediaURL string) (string, error) {
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
 
-	homeReq, err := http.NewRequest("GET", "https://snaptik.app/", nil)
+	homeReq, err := http.NewRequestWithContext(ctx, "GET", "https://snaptik.app/", nil)
 	if err != nil {
 		return "", fmt.Errorf("ошибка создания запроса к snaptik.app: %v", err)
 	}
@@ -375,7 +380,7 @@ func getSnapsaveVideoURLTikTok(mediaURL string) (string, error) {
 	formData.Set("url", mediaURL)
 	formData.Set("token", token)
 
-	postReq, err := http.NewRequest("POST", "https://snaptik.app/abc2.php", strings.NewReader(formData.Encode()))
+	postReq, err := http.NewRequestWithContext(ctx, "POST", "https://snaptik.app/abc2.php", strings.NewReader(formData.Encode()))
 	if err != nil {
 		return "", fmt.Errorf("ошибка создания POST-запроса к snaptik.app: %v", err)
 	}
@@ -425,12 +430,12 @@ func getSnapsaveVideoURLTikTok(mediaURL string) (string, error) {
 	return videoURL, nil
 }
 
-func getSnapsaveVideoURLTwitter(mediaURL string) (string, error) {
+func getSnapsaveVideoURLTwitter(ctx context.Context, mediaURL string) (string, error) {
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
 
-	homeReq, err := http.NewRequest("GET", "https://twitterdownloader.snapsave.app/", nil)
+	homeReq, err := http.NewRequestWithContext(ctx, "GET", "https://twitterdownloader.snapsave.app/", nil)
 	if err != nil {
 		return "", fmt.Errorf("ошибка создания запроса к twitterdownloader.snapsave.app: %v", err)
 	}
@@ -461,7 +466,7 @@ func getSnapsaveVideoURLTwitter(mediaURL string) (string, error) {
 	formData.Set("url", mediaURL)
 	formData.Set("token", token)
 
-	postReq, err := http.NewRequest("POST", "https://twitterdownloader.snapsave.app/action.php", strings.NewReader(formData.Encode()))
+	postReq, err := http.NewRequestWithContext(ctx, "POST", "https://twitterdownloader.snapsave.app/action.php", strings.NewReader(formData.Encode()))
 	if err != nil {
 		return "", fmt.Errorf("ошибка создания POST-запроса к twitterdownloader.snapsave.app: %v", err)
 	}
@@ -513,7 +518,7 @@ func getSnapsaveVideoURLTwitter(mediaURL string) (string, error) {
 }
 
 // getSnapsaveVideoURLInstagramFacebook получает URL видео для Instagram и Facebook
-func getSnapsaveVideoURLInstagramFacebook(mediaURL string) (string, error) {
+func getSnapsaveVideoURLInstagramFacebook(ctx context.Context, mediaURL string) (string, error) {
 	apiURL := "https://snapsave.app/action.php?lang=en"
 
 	formData := neturl.Values{}
@@ -523,7 +528,7 @@ func getSnapsaveVideoURLInstagramFacebook(mediaURL string) (string, error) {
 		Timeout: 30 * time.Second,
 	}
 
-	req, err := http.NewRequest("POST", apiURL, strings.NewReader(formData.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(formData.Encode()))
 	if err != nil {
 		return "", fmt.Errorf("ошибка создания запроса: %v", err)
 	}
@@ -679,38 +684,38 @@ func createUserDirectory(userID int64, platform string) (string, error) {
 }
 
 // fallbackDownload обрабатывает скачивание видео через fallback методы
-func fallbackDownload(mediaURL string, userID int64, platform PlatformType) (string, error) {
+func fallbackDownload(ctx context.Context, mediaURL string, userID int64, platform PlatformType) (string, error) {
 	switch platform {
 	case Instagram:
-		return fallbackInstagramDownload(mediaURL, userID)
+		return fallbackInstagramDownload(ctx, mediaURL, userID)
 	case Twitter:
-		return fallbackTwitterDownload(mediaURL, userID)
+		return fallbackTwitterDownload(ctx, mediaURL, userID)
 	case TikTok:
-		return fallbackTikTokDownload(mediaURL, userID)
+		return fallbackTikTokDownload(ctx, mediaURL, userID)
 	case Facebook:
-		return fallbackFacebookDownload(mediaURL, userID)
+		return fallbackFacebookDownload(ctx, mediaURL, userID)
 	default:
 		return "", fmt.Errorf("платформа %s не поддерживается в fallback режиме", platform)
 	}
 }
 
-func DownloadInstagramVideo(url string, userID int64) (string, error) {
-	return snapsaveDownload(url, userID)
+func DownloadInstagramVideo(ctx context.Context, url string, userID int64) (string, error) {
+	return snapsaveDownload(ctx, url, userID)
 }
 
-func DownloadTwitterVideo(url string, userID int64) (string, error) {
-	return snapsaveDownload(url, userID)
+func DownloadTwitterVideo(ctx context.Context, url string, userID int64) (string, error) {
+	return snapsaveDownload(ctx, url, userID)
 }
 
-func DownloadTikTokVideo(url string, userID int64) (string, error) {
-	return snapsaveDownload(url, userID)
+func DownloadTikTokVideo(ctx context.Context, url string, userID int64) (string, error) {
+	return snapsaveDownload(ctx, url, userID)
 }
 
-func DownloadFacebookVideo(url string, userID int64) (string, error) {
-	return snapsaveDownload(url, userID)
+func DownloadFacebookVideo(ctx context.Context, url string, userID int64) (string, error) {
+	return snapsaveDownload(ctx, url, userID)
 }
 
-func DownloadYouTubeVideo(url string, userID int64) (string, error) {
+func DownloadYouTubeVideo(ctx context.Context, url string, userID int64) (string, error) {
 	outputPath, err := createUserDirectory(userID, "youtube")
 	if err != nil {
 		return "", fmt.Errorf("ошибка создания директории: %v", err)
@@ -731,7 +736,7 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 		url,
 	}
 
-	cmd := exec.Command("yt-dlp", args...)
+	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
 
 	workDir, err := os.Getwd()
 	if err != nil {
@@ -749,63 +754,45 @@ func DownloadYouTubeVideo(url string, userID int64) (string, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	timeout := 5 * time.Minute
-	done := make(chan error, 1)
+	runErr := cmd.Run()
+	stdoutStr := stdout.String()
+	stderrStr := stderr.String()
 
-	go func() {
-		done <- cmd.Run()
-	}()
+	if runErr != nil {
+		errorDetails := fmt.Sprintf("yt-dlp failed with exit code: %v\nStdout: %s\nStderr: %s\nCommand: %s",
+			runErr, stdoutStr, stderrStr, strings.Join(append([]string{"yt-dlp"}, args...), " "))
 
-	select {
-	case err := <-done:
-		stdoutStr := stdout.String()
-		stderrStr := stderr.String()
-
-		if err != nil {
-			errorDetails := fmt.Sprintf("yt-dlp failed with exit code: %v\nStdout: %s\nStderr: %s\nCommand: %s",
-				err, stdoutStr, stderrStr, strings.Join(append([]string{"yt-dlp"}, args...), " "))
-
-			if strings.Contains(stderrStr, "Video unavailable") {
-				return "", fmt.Errorf("видео недоступно (возможно, удалено или приватное)")
-			}
-			if strings.Contains(stderrStr, "Private video") {
-				return "", fmt.Errorf("видео является приватным")
-			}
-			if strings.Contains(stderrStr, "Sign in to confirm your age") {
-				return "", fmt.Errorf("видео имеет возрастные ограничения")
-			}
-			if strings.Contains(stderrStr, "This video is not available") {
-				return "", fmt.Errorf("видео недоступно в вашем регионе")
-			}
-			if strings.Contains(stderrStr, "Requested format is not available") {
-				return "", fmt.Errorf("запрашиваемый формат недоступен")
-			}
-
-			return "", fmt.Errorf("ошибка выполнения yt-dlp: %v\nДетали: %s", err, errorDetails)
+		if strings.Contains(stderrStr, "Video unavailable") {
+			return "", fmt.Errorf("видео недоступно (возможно, удалено или приватное)")
 		}
-
-		if strings.Contains(stderrStr, "File is larger than max-filesize") {
-			return "", fmt.Errorf("файл превышает ограничение размера (50MB)")
+		if strings.Contains(stderrStr, "Private video") {
+			return "", fmt.Errorf("видео является приватным")
+		}
+		if strings.Contains(stderrStr, "Sign in to confirm your age") {
+			return "", fmt.Errorf("видео имеет возрастные ограничения")
+		}
+		if strings.Contains(stderrStr, "This video is not available") {
+			return "", fmt.Errorf("видео недоступно в вашем регионе")
 		}
 		if strings.Contains(stderrStr, "Requested format is not available") {
-			return "", fmt.Errorf("подходящий формат видео не найден (возможно, все версии слишком большие)")
-		}
-		if strings.Contains(stdoutStr, "has already been downloaded") || strings.Contains(stderrStr, "has already been downloaded") {
+			return "", fmt.Errorf("запрашиваемый формат недоступен")
 		}
 
-		if strings.Contains(stdoutStr, "aborting") || strings.Contains(stderrStr, "aborting") {
-			return "", fmt.Errorf("скачивание прервано (возможно, из-за превышения размера файла)")
-		}
-
-		fmt.Printf("yt-dlp успешно завершен.\nStdout: %s\nStderr: %s\nCommand: %s\n",
-			stdoutStr, stderrStr, strings.Join(append([]string{"yt-dlp"}, args...), " "))
-
-	case <-time.After(timeout):
-		if cmd.Process != nil {
-			cmd.Process.Kill()
-		}
-		return "", fmt.Errorf("превышен таймаут скачивания (5 минут)")
+		return "", fmt.Errorf("ошибка выполнения yt-dlp: %v\nДетали: %s", runErr, errorDetails)
 	}
+
+	if strings.Contains(stderrStr, "File is larger than max-filesize") {
+		return "", fmt.Errorf("файл превышает ограничение размера (50MB)")
+	}
+	if strings.Contains(stderrStr, "Requested format is not available") {
+		return "", fmt.Errorf("подходящий формат видео не найден (возможно, все версии слишком большие)")
+	}
+	if strings.Contains(stdoutStr, "aborting") || strings.Contains(stderrStr, "aborting") {
+		return "", fmt.Errorf("скачивание прервано (возможно, из-за превышения размера файла)")
+	}
+
+	fmt.Printf("yt-dlp успешно завершен.\nStdout: %s\nStderr: %s\nCommand: %s\n",
+		stdoutStr, stderrStr, strings.Join(append([]string{"yt-dlp"}, args...), " "))
 
 	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
 		// yt-dlp может создать файл с другим именем, ищем все файлы в директории
@@ -930,7 +917,7 @@ func checkYtDlpAvailability() error {
 }
 
 // fallbackInstagramDownload резервный метод для Instagram
-func fallbackInstagramDownload(url string, userID int64) (string, error) {
+func fallbackInstagramDownload(ctx context.Context, url string, userID int64) (string, error) {
 	outputPath, err := createUserDirectory(userID, "instagram")
 	if err != nil {
 		return "", err
@@ -951,7 +938,7 @@ func fallbackInstagramDownload(url string, userID int64) (string, error) {
 	}
 
 	// Отправка запроса к ddinstagram для получения HTML страницы
-	req, err := http.NewRequest("GET", ddUrl, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", ddUrl, nil)
 	if err != nil {
 		return "", fmt.Errorf("ошибка при создании запроса: %v", err)
 	}
@@ -1002,11 +989,11 @@ func fallbackInstagramDownload(url string, userID int64) (string, error) {
 		return "", fmt.Errorf("не удалось найти URL видео в fallback режиме для Instagram")
 	}
 
-	return downloadMedia(videoURL, outputPath)
+	return downloadMedia(ctx, videoURL, outputPath)
 }
 
 // fallbackTwitterDownload резервный метод для Twitter
-func fallbackTwitterDownload(url string, userID int64) (string, error) {
+func fallbackTwitterDownload(ctx context.Context, url string, userID int64) (string, error) {
 	outputPath, err := createUserDirectory(userID, "twitter")
 	if err != nil {
 		return "", err
@@ -1028,7 +1015,7 @@ func fallbackTwitterDownload(url string, userID int64) (string, error) {
 	}
 
 	// Отправка запроса к vxTwitter
-	req, err := http.NewRequest("GET", vxUrl, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", vxUrl, nil)
 	if err != nil {
 		return "", fmt.Errorf("ошибка при создании запроса: %v", err)
 	}
@@ -1078,11 +1065,11 @@ func fallbackTwitterDownload(url string, userID int64) (string, error) {
 		return "", fmt.Errorf("не удалось найти URL видео в fallback режиме для Twitter")
 	}
 
-	return downloadMedia(videoURL, outputPath)
+	return downloadMedia(ctx, videoURL, outputPath)
 }
 
 // fallbackTikTokDownload резервный метод для TikTok через tikmate.online
-func fallbackTikTokDownload(url string, userID int64) (string, error) {
+func fallbackTikTokDownload(ctx context.Context, url string, userID int64) (string, error) {
 
 	// Создаем выходную директорию
 	outputPath, err := createUserDirectory(userID, "tiktok")
@@ -1098,7 +1085,7 @@ func fallbackTikTokDownload(url string, userID int64) (string, error) {
 	formData := neturl.Values{}
 	formData.Set("url", url)
 
-	req, err := http.NewRequest("POST", "https://tikmate.online/download", strings.NewReader(formData.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://tikmate.online/download", strings.NewReader(formData.Encode()))
 	if err != nil {
 		return "", fmt.Errorf("ошибка создания запроса к tikmate.online: %v", err)
 	}
@@ -1136,18 +1123,18 @@ func fallbackTikTokDownload(url string, userID int64) (string, error) {
 	err = json.Unmarshal(body, &response)
 	if err != nil {
 		// Если JSON не парсится, пробуем извлечь URL регулярными выражениями
-		return fallbackTikTokRegexExtract(string(body), outputPath)
+		return fallbackTikTokRegexExtract(ctx, string(body), outputPath)
 	}
 
 	if !response.Success || response.Data.VideoURL == "" {
 		return "", fmt.Errorf("tikmate.online не смог обработать URL")
 	}
 
-	return downloadMedia(response.Data.VideoURL, outputPath)
+	return downloadMedia(ctx, response.Data.VideoURL, outputPath)
 }
 
 // fallbackTikTokRegexExtract извлекает URL видео регулярными выражениями
-func fallbackTikTokRegexExtract(htmlContent string, outputPath string) (string, error) {
+func fallbackTikTokRegexExtract(ctx context.Context, htmlContent string, outputPath string) (string, error) {
 	// Ищем различные паттерны URL видео
 	patterns := []string{
 		`"play":"([^"]+)"`,
@@ -1165,7 +1152,7 @@ func fallbackTikTokRegexExtract(htmlContent string, outputPath string) (string, 
 			videoURL = strings.ReplaceAll(videoURL, "\\u0026", "&")
 			videoURL = strings.ReplaceAll(videoURL, "\\/", "/")
 
-			return downloadMedia(videoURL, outputPath)
+			return downloadMedia(ctx, videoURL, outputPath)
 		}
 	}
 
@@ -1173,14 +1160,14 @@ func fallbackTikTokRegexExtract(htmlContent string, outputPath string) (string, 
 }
 
 // fallbackFacebookDownload резервный метод для Facebook (простой подход)
-func fallbackFacebookDownload(url string, userID int64) (string, error) {
+func fallbackFacebookDownload(ctx context.Context, url string, userID int64) (string, error) {
 	// Для Facebook пока что просто возвращаем ошибку, так как fallback методы сложны
 	// В будущем можно добавить альтернативные API
 	return "", fmt.Errorf("facebook fallback метод пока не реализован - попробуйте позже")
 }
 
 // downloadMedia скачивает медиа по URL и сохраняет его в outputPath
-func downloadMedia(url, outputPath string) (string, error) {
+func downloadMedia(ctx context.Context, url, outputPath string) (string, error) {
 	// Удаляем лишние кавычки и экранированные символы в URL
 	url = strings.Trim(url, "\"'")
 	url = strings.ReplaceAll(url, "\\", "")
@@ -1208,7 +1195,7 @@ func downloadMedia(url, outputPath string) (string, error) {
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		req, err := http.NewRequest("GET", url, nil)
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 		if err != nil {
 			lastErr = fmt.Errorf("ошибка при создании запроса для скачивания: %v", err)
 			continue
