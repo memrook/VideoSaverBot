@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"goland/VideoSaverBot/downloader"
+	"io"
 	"log"
+	"mime/multipart"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -392,10 +397,79 @@ func deleteMessageAfterDelay(bot *tgbotapi.BotAPI, chatID int64, messageID int, 
 	}
 }
 
-func sendVideo(bot *tgbotapi.BotAPI, chatID int64, videoPath string, userID int64, processingMsgID int) {
-	video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(videoPath))
-	//video.Caption = "Вот ваше видео!"
+func getVideoDimensions(videoPath string) (width, height int) {
+	type probeOutput struct {
+		Streams []struct {
+			CodecType string `json:"codec_type"`
+			Width     int    `json:"width"`
+			Height    int    `json:"height"`
+		} `json:"streams"`
+	}
+	out, err := exec.Command("ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", videoPath).Output()
+	if err != nil {
+		return 0, 0
+	}
+	var data probeOutput
+	if err := json.Unmarshal(out, &data); err != nil {
+		return 0, 0
+	}
+	for _, s := range data.Streams {
+		if s.CodecType == "video" {
+			return s.Width, s.Height
+		}
+	}
+	return 0, 0
+}
 
+func sendVideoWithDimensions(bot *tgbotapi.BotAPI, chatID int64, videoPath string, width, height int) error {
+	f, err := os.Open(videoPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	_ = w.WriteField("chat_id", strconv.FormatInt(chatID, 10))
+	_ = w.WriteField("width", strconv.Itoa(width))
+	_ = w.WriteField("height", strconv.Itoa(height))
+	_ = w.WriteField("supports_streaming", "true")
+	part, err := w.CreateFormFile("video", filepath.Base(videoPath))
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(part, f); err != nil {
+		return err
+	}
+	w.Close()
+
+	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendVideo", bot.Token)
+	req, err := http.NewRequest("POST", apiURL, &buf)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+
+	resp, err := bot.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var apiResp struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return err
+	}
+	if !apiResp.OK {
+		return fmt.Errorf("telegram API: %s", apiResp.Description)
+	}
+	return nil
+}
+
+func sendVideo(bot *tgbotapi.BotAPI, chatID int64, videoPath string, userID int64, processingMsgID int) {
 	var err error
 	videoSent := false
 
@@ -404,7 +478,6 @@ func sendVideo(bot *tgbotapi.BotAPI, chatID int64, videoPath string, userID int6
 		if _, delErr := bot.Request(deleteMsg); delErr != nil {
 			log.Printf("Не удалось удалить служебное сообщение %d: %v", processingMsgID, delErr)
 		}
-
 		if videoSent {
 			if fileErr := os.Remove(videoPath); fileErr != nil {
 				log.Printf("Не удалось удалить временный файл %s: %v", videoPath, fileErr)
@@ -412,7 +485,14 @@ func sendVideo(bot *tgbotapi.BotAPI, chatID int64, videoPath string, userID int6
 		}
 	}()
 
-	_, err = bot.Send(video)
+	width, height := getVideoDimensions(videoPath)
+	if width > 0 && height > 0 {
+		err = sendVideoWithDimensions(bot, chatID, videoPath, width, height)
+	} else {
+		video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(videoPath))
+		video.SupportsStreaming = true
+		_, err = bot.Send(video)
+	}
 
 	if err != nil {
 		log.Printf("Ошибка при отправке видео пользователю %d: %v", userID, err)
