@@ -732,7 +732,6 @@ func DownloadYouTubeVideo(ctx context.Context, url string, userID int64) (string
 		"--no-cache-dir",
 		"--abort-on-error",
 		"--output", outputPath,
-		"--verbose",
 		url,
 	}
 
@@ -759,8 +758,7 @@ func DownloadYouTubeVideo(ctx context.Context, url string, userID int64) (string
 	stderrStr := stderr.String()
 
 	if runErr != nil {
-		errorDetails := fmt.Sprintf("yt-dlp failed with exit code: %v\nStdout: %s\nStderr: %s\nCommand: %s",
-			runErr, stdoutStr, stderrStr, strings.Join(append([]string{"yt-dlp"}, args...), " "))
+		fmt.Printf("yt-dlp failed: %v\nStdout: %s\nStderr: %s\n", runErr, stdoutStr, stderrStr)
 
 		if strings.Contains(stderrStr, "Video unavailable") {
 			return "", fmt.Errorf("видео недоступно (возможно, удалено или приватное)")
@@ -777,8 +775,14 @@ func DownloadYouTubeVideo(ctx context.Context, url string, userID int64) (string
 		if strings.Contains(stderrStr, "Requested format is not available") {
 			return "", fmt.Errorf("запрашиваемый формат недоступен")
 		}
+		if strings.Contains(stderrStr, "Sign in to confirm") || strings.Contains(stderrStr, "not a bot") {
+			return "", fmt.Errorf("YouTube требует авторизацию (bot detection), попробуйте позже")
+		}
+		if strings.Contains(stderrStr, "Unable to extract") || strings.Contains(stderrStr, "Incomplete data") {
+			return "", fmt.Errorf("не удалось извлечь данные видео — возможно, yt-dlp устарел")
+		}
 
-		return "", fmt.Errorf("ошибка выполнения yt-dlp: %v\nДетали: %s", runErr, errorDetails)
+		return "", fmt.Errorf("ошибка скачивания YouTube Shorts (exit: %v)", runErr)
 	}
 
 	if strings.Contains(stderrStr, "File is larger than max-filesize") {
@@ -791,8 +795,7 @@ func DownloadYouTubeVideo(ctx context.Context, url string, userID int64) (string
 		return "", fmt.Errorf("скачивание прервано (возможно, из-за превышения размера файла)")
 	}
 
-	fmt.Printf("yt-dlp успешно завершен.\nStdout: %s\nStderr: %s\nCommand: %s\n",
-		stdoutStr, stderrStr, strings.Join(append([]string{"yt-dlp"}, args...), " "))
+	fmt.Printf("yt-dlp успешно завершен. Stdout: %s\n", stdoutStr)
 
 	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
 		// yt-dlp может создать файл с другим именем, ищем все файлы в директории
